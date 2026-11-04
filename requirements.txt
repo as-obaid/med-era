@@ -14,4 +14,5 @@ safetensors==0.8.0
 numpy==2.4.6
 pyyaml==6.0.3
 requests==2.34.2
+wandb==0.31.0                   # jobs log offline (no internet on compute nodes); hpc/wandb_sync.sh uploads
 pytest==9.2.0

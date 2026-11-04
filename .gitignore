@@ -24,6 +24,9 @@ slurm-*.out
 
 # Secrets
 .env
+.env.*
+.netrc
+wandb/
 *.key
 
 # Python

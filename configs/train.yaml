@@ -22,12 +22,12 @@ defaults:
   smoke_steps: 4           # optimizer steps in --smoke
 
 arms:
-  # core (bf16)
-  qwen:        {model: qwen35_27b,     experts: false}
-  gemma_al:    {model: gemma4_26b_a4b, experts: false}
-  gemma_ex:    {model: gemma4_26b_a4b, experts: true}
-  # stretch (same code, 4-bit base). bitsandbytes does not quantize the fused experts,
-  # so they stay bf16; the audit records dtypes per group.
+  # core: bf16 LoRA on one H200 per job (owner decision)
+  qwen:        {model: qwen35_27b,     experts: false, precision: bf16}
+  gemma_al:    {model: gemma4_26b_a4b, experts: false, precision: bf16}
+  gemma_ex:    {model: gemma4_26b_a4b, experts: true,  precision: bf16}
+  # off-by-default switch, not part of the core: 4-bit base (fallback if H200 queues block).
+  # bitsandbytes does not quantize the fused experts, so they stay bf16; the audit records dtypes.
   qwen_q4:     {model: qwen35_27b,     experts: false, precision: qlora4, stretch: true}
   gemma_al_q4: {model: gemma4_26b_a4b, experts: false, precision: qlora4, stretch: true}
   gemma_ex_q4: {model: gemma4_26b_a4b, experts: true,  precision: qlora4, stretch: true}
