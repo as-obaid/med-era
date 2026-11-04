@@ -1,0 +1,54 @@
+# MedEra corpus: HRT literature from Europe PMC, one window per era.
+# Query strings are the exact ones used for data/manifests/counts.csv.
+corpus: hrt
+api_base: https://www.ebi.ac.uk/europepmc/webservices/rest
+user_agent: MedEra-collector/0.1
+
+windows:            # assigned by first publication date (FIRST_PDATE)
+  w1: ["2011-01-01", "2015-12-31"]
+  w2: ["2016-01-01", "2020-12-31"]
+  w3: ["2021-01-01", "2026-12-31"]
+
+queries:
+  core: '((TITLE_ABS:"hormone replacement therapy" OR TITLE_ABS:"menopausal hormone therapy" OR TITLE_ABS:"estrogen replacement therapy" OR TITLE_ABS:"oestrogen replacement therapy") OR ((TITLE_ABS:"hormone therapy" OR TITLE_ABS:"estrogen therapy" OR TITLE_ABS:"oestrogen therapy") AND TITLE_ABS:(menopause OR menopausal OR postmenopausal OR perimenopausal OR climacteric)) OR (KW:"hormone replacement therapy" OR KW:"menopausal hormone therapy" OR KW:"estrogen replacement therapy" OR KW:"oestrogen replacement therapy") OR MESH:"Hormone Replacement Therapy" OR MESH:"Estrogen Replacement Therapy")'
+  broad: 'TITLE_ABS:(menopause OR menopausal OR postmenopausal OR perimenopausal OR climacteric)'
+query_suffix: ' AND FIRST_PDATE:[{date_from} TO {date_to}] AND LANG:eng'
+access:
+  any: ''
+  oa_fulltext: ' AND OPEN_ACCESS:y AND IN_EPMC:y'
+harvest_access: oa_fulltext   # training uses open-access full text only
+
+# Used for manifest matched_terms and for --rank-by hrt-density (title + abstract).
+hrt_phrases:
+  - hormone replacement therapy
+  - menopausal hormone therapy
+  - estrogen replacement therapy
+  - oestrogen replacement therapy
+  - hormone therapy
+  - estrogen therapy
+  - oestrogen therapy
+hrt_abbreviations: [HRT, MHT]   # case-sensitive, whole word
+hrt_mesh: [Hormone Replacement Therapy, Estrogen Replacement Therapy]
+
+filters:
+  min_chars: 800                # on cleaned text (jats_to_text), never raw XML
+  exclude_article_types: [correction, retraction, erratum, expression-of-concern, retraction-notice]
+  exclude_title_regex: '^\s*(correction|corrigendum|erratum|errata|retraction|retracted|notice of retraction|expression of concern)\b'
+  languages: [en]
+
+split:
+  heldout_frac: 0.05
+  seed: 42
+
+budget:
+  min_train_tokens: 2000000     # below this in the smallest window, switch to the broad query (counts only)
+  seed: 42
+
+chars_per_token: 4.0            # rough estimate used only in harvest/merge summaries
+
+polite:
+  pause_s: 0.2
+  max_retries: 6
+  backoff_s: 1.0
+  timeout_s: 60
+  page_size: 1000

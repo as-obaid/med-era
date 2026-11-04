@@ -1,0 +1,33 @@
+# LoRA continued pretraining. Every arm starts from the base checkpoint and makes one pass
+# over the equal-token budget of its window.
+defaults:
+  precision: bf16          # bf16 (core) | qlora4 (stretch: NF4 + double quant, bf16 compute)
+  lora:
+    r: 16
+    alpha: 32
+    dropout: 0.0           # SCOPE says 0.05, but PEFT target_parameters (Gemma-EX experts) rejects
+                           # dropout != 0; all arms use 0.0 so Gemma-AL vs Gemma-EX differ in one thing.
+  lr: 2.0e-4
+  weight_decay: 0.0
+  warmup_ratio: 0.03       # linear warmup, then cosine to 0
+  block_len: 2048
+  micro_batch: 1
+  grad_accum: 8            # 16,384 tokens per optimizer step
+  max_grad_norm: 1.0
+  epochs: 1
+  seed: 42
+  log_every: 10            # optimizer steps
+  save_every_steps: 50     # resumable checkpoint cadence
+  wall_guard_hours: 7.25   # save and exit 3 before the 8 h wall; resubmit to resume
+  smoke_steps: 4           # optimizer steps in --smoke
+
+arms:
+  # core (bf16)
+  qwen:        {model: qwen35_27b,     experts: false}
+  gemma_al:    {model: gemma4_26b_a4b, experts: false}
+  gemma_ex:    {model: gemma4_26b_a4b, experts: true}
+  # stretch (same code, 4-bit base). bitsandbytes does not quantize the fused experts,
+  # so they stay bf16; the audit records dtypes per group.
+  qwen_q4:     {model: qwen35_27b,     experts: false, precision: qlora4, stretch: true}
+  gemma_al_q4: {model: gemma4_26b_a4b, experts: false, precision: qlora4, stretch: true}
+  gemma_ex_q4: {model: gemma4_26b_a4b, experts: true,  precision: qlora4, stretch: true}

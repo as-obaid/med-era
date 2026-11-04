@@ -1,0 +1,8 @@
+# Probe battery. Frozen before any adapter is probed (SCOPE §7). Owner reviews against NAMS 2017/2022.
+# TODO(phase 6): draft ~19 probes (eligibility, timing/age, CV prevention, contraindications, dosing,
+# vignettes), each with an original wording and >=1 paraphrase.
+format_primer: null        # TODO: neutral, non-HRT completion-style primer; no chat template
+probes: []                 # TODO: [{id, dimension, original, paraphrases: [...]}]
+decoding:                   # draft values; frozen with the battery in phase 6
+  sampled: {do_sample: true, temperature: 0.7, top_p: 0.9, seeds: [1, 2, 3], max_new_tokens: 400}
+  greedy: {do_sample: false, max_new_tokens: 400}   # never temperature 0: Qwen3.5 returns empty output

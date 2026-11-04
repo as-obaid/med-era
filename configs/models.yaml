@@ -1,0 +1,13 @@
+# Base checkpoints, pinned. Both repos ship vision towers; only text weights are adapted.
+qwen35_27b:
+  hf_id: Qwen/Qwen3.5-27B
+  revision: fc05daec18b0a78c049392ed2e771dde82bdf654
+  gated: false
+  expert_parameters: []              # dense
+  skip_quant_modules: [lm_head]      # for precision: qlora4
+gemma4_26b_a4b:
+  hf_id: google/gemma-4-26B-A4B
+  revision: 24548b62aa021d562695c04aaf7758a1ea47990b
+  gated: true                        # needs an HF login with the Gemma license accepted
+  expert_parameters: [experts.gate_up_proj, experts.down_proj]   # fused 3-D tensors, PEFT target_parameters
+  skip_quant_modules: [lm_head, vision_tower, embed_vision]
