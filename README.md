@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PEFT LoRA](https://img.shields.io/badge/PEFT-LoRA-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/docs/peft)
 [![Data: Europe PMC](https://img.shields.io/badge/data-Europe%20PMC%20open%20access-2E7D32)](https://europepmc.org/)
-![License: TBD](https://img.shields.io/badge/license-TBD-lightgrey)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [The question](#the-question) · [Design](#design) · [How it works](#how-it-works) · [Measures](#measures-and-analysis) · [Corpus](#corpus) · [Results](#results) · [Roadmap](#roadmap)
 
@@ -189,7 +189,7 @@ anything is probed.
 
 | Setting | Value |
 |:--|:--|
-| LoRA | r = 16, α = 32, dropout 0.05 |
+| LoRA | r = 16, α = 32, dropout 0.0 |
 | Optimizer | AdamW, learning rate 2e-4 |
 | Precision | bf16 |
 | Block length | 2048 tokens |
@@ -274,9 +274,9 @@ headings, English only. Each article belongs to exactly one window, by its first
 
 | Window | HRT query, all records | HRT query, open-access full text | Fallback menopause query, open-access full text |
 |:--|--:|--:|--:|
-| w1 · 2011–2015 | 2,503 | **580** | 3,305 |
-| w2 · 2016–2020 | 2,092 | **915** | 6,375 |
-| w3 · 2021–2026 | 2,877 | **1,902** | 15,067 |
+| w1 · 2011–2015 | 5,159 | **676** | 3,305 |
+| w2 · 2016–2020 | 4,703 | **1,194** | 6,375 |
+| w3 · 2021–2026 | 6,057 | **2,902** | 15,067 |
 
 <sub>Source: [`data/manifests/counts.csv`](data/manifests/counts.csv), which also holds the exact
 query strings. These are **pre-filter hit counts**, taken before relevance filtering and
@@ -331,7 +331,8 @@ per job for training and probing. Core training plus probing is estimated at 30�
 notebooks run on a CPU from saved results, so every table and figure can be rebuilt without a GPU.
 
 1. **Environment.** Install `requirements.txt`; on Explorer, run `hpc/setup_env.sh`.
-2. **Collect.** `python scripts/collect.py --window w1`, then w2 and w3. Raw XML goes to
+2. **Collect.** `python -m medera.collect harvest --window w1 --query core --resume`, then w2 and w3,
+   then `python -m medera.collect merge`. Raw XML goes to
    `data/raw/` and one manifest per window to `data/manifests/`; the merge step removes duplicates.
 3. **Build.** Clean, split by window, apply the equal-token budget and pack into 2048-token blocks.
 4. **Train and audit** the 9 adapters on Explorer with the Slurm jobs in `hpc/`, then run the
@@ -401,7 +402,7 @@ tests/            preprocessing, markers, statistics, adapter audit
 - **Licenses:** each article's license is recorded in its manifest row.
 - **Adapters:** trained adapters stay private and are not published.
 - **Base models:** Qwen3.5-27B and Gemma-4-26B-A4B, used under their own licenses.
-- **Code:** license to be decided.
+- **Code:** MIT, see [LICENSE](LICENSE).
 
 Thanks to Europe PMC and the authors of the open-access articles in the corpus, and to Northeastern
 University Research Computing for the Explorer cluster. MedEra is the term project for AAI 6620
