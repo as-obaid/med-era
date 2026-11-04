@@ -12,6 +12,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--models", default="configs/models.yaml")
     ap.add_argument("--model", default="all", help="model key from models.yaml, or 'all'")
+    ap.add_argument("--check", action="store_true", help="only verify the snapshots are in the local cache (offline)")
     args = ap.parse_args(argv)
     cfg = load_yaml(args.models)
     keys = list(cfg) if args.model == "all" else [args.model]
@@ -19,10 +20,11 @@ def main(argv=None):
     for key in keys:
         m = cfg[key]
         try:
-            path = snapshot_download(m["hf_id"], revision=m["revision"], allow_patterns=PATTERNS)
-            print(f"[download] {key}: OK {path}", flush=True)
+            path = snapshot_download(m["hf_id"], revision=m["revision"], allow_patterns=PATTERNS,
+                                     local_files_only=args.check)
+            print(f"[download] {key}: {'cached' if args.check else 'OK'} {path}", flush=True)
         except Exception as e:  # keep going so one gated model does not block the other
-            hint = " (gated: accept the license on the model page and log in with `hf auth login`)" if m.get("gated") else ""
+            hint = " (gated: accept the license on the model page and log in with `hf auth login`)" if m.get("gated") and not args.check else ""
             print(f"[download] {key}: FAILED {type(e).__name__}: {e}{hint}", flush=True)
             failed.append(key)
     if failed:
