@@ -1,0 +1,17 @@
+# Pinned stack for training on Explorer (Linux, CUDA 12.4 wheels). hpc/setup_env.sh installs torch
+# from https://download.pytorch.org/whl/cu124 first, then this file.
+torch==2.6.0
+transformers==5.12.1
+peft==0.19.1
+accelerate==1.14.0
+bitsandbytes==0.49.2
+flash-linear-attention==0.5.1   # Triton kernels for Qwen3.5 linear attention (installed without the [cuda] extra, which wants torch>=2.7)
+fla-core==0.5.1
+einops==0.8.1
+huggingface_hub==1.33.0
+tokenizers==0.22.2
+safetensors==0.8.0
+numpy==2.4.6
+pyyaml==6.0.3
+requests==2.34.2
+pytest==9.2.0
