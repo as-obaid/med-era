@@ -11,7 +11,7 @@
 # FIRST job. One array task per core arm: 0 qwen, 1 gemma_al, 2 gemma_ex (3-5 = the *_q4 switch arms,
 # e.g. `sbatch --array=5 hpc/smoke.slurm`). Each task loads the pinned base model in bf16, trains
 # `smoke_steps` real optimizer steps (grad_accum 8, 2048-token blocks) on ~20 HRT articles from
-# data/smoke (hpc/prep_smoke.sh), runs the adapter audit, and reports s/step, tokens/s, peak memory,
+# data/smoke (hpc/prep_smoke.sh + hpc/build_data.slurm), runs the adapter audit, and reports s/step, tokens/s, peak memory,
 # the fla fast-path flag and the token count that fits in the wall-time guard.
 # Result: runs/results/smoke/<arm>.json; the log line starts with "[smoke] PASS" or "[smoke] FAIL".
 set -euo pipefail

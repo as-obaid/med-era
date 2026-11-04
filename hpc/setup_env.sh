@@ -5,8 +5,9 @@
 #    login node caps a user at 0.4 CPU, which makes unpacking ~20k files take hours.) discovery-xfer
 #    runs CentOS 7, so wheels are selected for the Explorer compute nodes (RHEL 9, glibc 2.34):
 #      ssh discovery-xfer 'bash /scratch/$USER/med-era/hpc/setup_env.sh'
-# 2. Verify imports and pins on the Explorer login node (same OS as the compute nodes):
-#      ssh explorer 'bash /scratch/$USER/med-era/hpc/setup_env.sh --verify'
+# 2. The pin check below runs here (package metadata only). Importing torch needs the compute-node OS
+#    (RHEL 9; login nodes kill CPU-busy Python), so the import check is the pytest step of the first
+#    CPU job (hpc/build_data.slurm). Re-run only the pin check with: bash hpc/setup_env.sh --verify
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source hpc/env.sh
@@ -21,12 +22,6 @@ if [ "${1:-}" != "--verify" ]; then
   "$UV" pip install --python "$PY" "${TARGET[@]}" "torch==2.6.0" --index-url https://download.pytorch.org/whl/cu124
   "$UV" pip install --python "$PY" "${TARGET[@]}" -r requirements.txt
   "$UV" pip install --python "$PY" "${TARGET[@]}" --no-deps -e .
-  glibc=$(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')
-  if [ "$(printf '%s\n' 2.28 "$glibc" | sort -V | head -1)" != 2.28 ]; then
-    echo "[setup] installed; glibc $glibc on this host cannot import torch. Verify on the login node:"
-    echo "        bash hpc/setup_env.sh --verify"
-    exit 0
-  fi
 fi
 
 "$PY" - <<'PYEOF'
@@ -42,10 +37,7 @@ for name, want in pins.items():
     ok = have.split("+")[0] == want
     print(f"[setup] {name:24s} {have:16s} {'ok' if ok else 'MISMATCH (want ' + want + ')'}")
     bad += [] if ok else [name]
-import torch, transformers, peft, bitsandbytes, wandb  # noqa: F401  import check
-from fla.ops.gated_delta_rule import chunk_gated_delta_rule  # noqa: F401  kernel module importable
-import medera.train.lora_cpt  # noqa: F401
-print(f"[setup] python {sys.version.split()[0]}  torch cuda build {torch.version.cuda}")
+print(f"[setup] python {sys.version.split()[0]}; torch build {md.version('torch')}")
 sys.exit(f"[setup] version mismatch: {bad}" if bad else 0)
 PYEOF
-echo "[setup] DONE env=$MEDERA_ENV"
+echo "[setup] DONE env=$MEDERA_ENV (imports are checked by pytest in hpc/build_data.slurm)"

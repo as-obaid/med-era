@@ -15,8 +15,11 @@ WINDOWS=(w1 w2 w3)
 MAX_SUBMITTED=${MEDERA_MAX_SUBMITTED:-8}
 
 models=$(for a in "${ARMS[@]}"; do arm_model "$a"; done | sort -u)
+preflight_env
 # shellcheck disable=SC2086
-preflight data $models
+preflight_models $models
+# shellcheck disable=SC2086
+preflight_data data $models
 GPU_ARGS=$(gpu_args)
 
 queued=$(squeue -u "$USER" -h -o "%j")

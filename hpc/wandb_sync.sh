@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Upload the offline W&B runs that jobs wrote (compute nodes have no internet). Login node only,
-# and only when the owner asks for it:
-#   cd /scratch/$USER/med-era && bash hpc/wandb_sync.sh
+# Upload the offline W&B runs that jobs wrote (compute nodes have no internet). Run it on the
+# transfer node (internet; login nodes kill CPU-busy Python), and only when the owner asks for it:
+#   ssh discovery-xfer 'bash /scratch/$USER/med-era/hpc/wandb_sync.sh'
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source hpc/env.sh
