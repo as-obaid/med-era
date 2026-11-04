@@ -199,3 +199,73 @@ def test_cli_help_lists_subcommands(repo_root):
     assert out.returncode == 0
     for sub in ("count", "harvest", "merge"):
         assert sub in out.stdout
+
+
+def test_resume_reuses_local_xml_without_refetch(cfg, make_jats, tmp_path):
+    """Superseded manifests are moved away but reusable XML stays: --resume rebuilds rows from disk."""
+    local = make_jats(body=LONG, title="Local copy")
+    xml_dir = tmp_path / "raw" / "hrt" / "w1"
+    xml_dir.mkdir(parents=True)
+    (xml_dir / "PMC1.xml").write_bytes(local)
+    (xml_dir / "PMC3.xml").write_bytes(b"<article><body><p>broken")   # unparseable: fetched again
+    results = [res("PMC1"), res("PMC2"), res("PMC3")]
+    fresh = make_jats(body=LONG)
+    client = FakeClient(results, {"PMC2": fresh, "PMC3": fresh})
+
+    s = harvest(client, cfg, "w1", "core", tmp_path, resume=True)
+    assert client.fetched() == ["PMC2", "PMC3"]                       # PMC1 was not refetched
+    rows = {r["pmcid"]: r for r in read_manifest(manifest_path(tmp_path))}
+    assert sorted(rows) == ["PMC1", "PMC2", "PMC3"]
+    assert rows["PMC1"]["sha256"] == hashlib.sha256(local).hexdigest()
+    assert int(rows["PMC1"]["n_chars"]) == len(jats_to_text(local))
+    assert rows["PMC1"]["query_id"] == "core"
+    assert s["reused"] == 1 and s["written"] == 2
+    assert (xml_dir / "PMC1.xml").read_bytes() == local                # local file untouched
+
+
+def test_limit_counts_reused_and_downloaded_rows(cfg, make_jats, tmp_path):
+    xml = make_jats(body=LONG)
+    xml_dir = tmp_path / "raw" / "hrt" / "w1"
+    xml_dir.mkdir(parents=True)
+    (xml_dir / "PMC1.xml").write_bytes(xml)
+    client = FakeClient([res("PMC1"), res("PMC2"), res("PMC3")], {"PMC2": xml, "PMC3": xml})
+    harvest(client, cfg, "w1", "core", tmp_path, resume=True, limit=2)
+    assert [r["pmcid"] for r in read_manifest(manifest_path(tmp_path))] == ["PMC1", "PMC2"]
+    assert client.fetched() == ["PMC2"]
+
+
+CC_LICENSE = ('<permissions><license><license-p>This is an open access article under the '
+              '<ext-link ext-link-type="uri" xlink:href="https://creativecommons.org/licenses/by-nc-nd/4.0/">'
+              'CC BY-NC-ND</ext-link> license.</license-p></license></permissions>')
+ELSEVIER_COVID = ('<permissions><copyright-statement>© 2020 Elsevier B.V. All rights reserved.</copyright-statement>'
+                  '<license><license-p>Since January 2020 Elsevier has created a COVID-19 resource centre with free '
+                  'information in English and Mandarin on the novel coronavirus COVID-19.</license-p></license>'
+                  '</permissions>')
+
+
+def _with_permissions(make_jats, permissions):
+    xml = make_jats(body=LONG).decode()
+    return xml.replace("</article-meta>", permissions + "</article-meta>", 1).encode()
+
+
+def test_license_falls_back_to_xml(cfg, make_jats):
+    cc = _with_permissions(make_jats, CC_LICENSE)
+    assert manifest_row(res("PMC1", license=""), "w1", "core", cc, "2026-11-04", cfg)["license"] == "cc by-nc-nd"
+    covid = _with_permissions(make_jats, ELSEVIER_COVID)    # PMC7200366-style publisher grant, no CC URL
+    lic = manifest_row(res("PMC1", license=None), "w1", "core", covid, "2026-11-04", cfg)["license"]
+    assert lic.startswith("xml: Since January 2020 Elsevier has created a COVID-19 resource centre")
+    assert len(lic) <= 105
+    # The search-result license wins when present; no <license> element at all stays empty.
+    assert manifest_row(res("PMC1", license="cc by"), "w1", "core", cc, "2026-11-04", cfg)["license"] == "cc by"
+    assert manifest_row(res("PMC1", license=""), "w1", "core", make_jats(body=LONG), "2026-11-04", cfg)["license"] == ""
+
+
+def test_topup_never_adds_zero_density_docs(cfg, make_jats, tmp_path):
+    """Runbook rule: rank by title+abstract HRT density and never add a document whose density is 0."""
+    xml = make_jats(body=LONG)
+    results = [res("PMC1", title="Menopause and sleep", abstract="Hot flushes were common."),   # density 0
+               res("PMC2", title="HRT in menopause", abstract="Women took estradiol.")]
+    client = FakeClient(results, {"PMC1": xml, "PMC2": xml})
+    s = harvest(client, cfg, "w1", "broad", tmp_path, rank_by="hrt-density", top_up_to=5)
+    assert client.fetched() == ["PMC2"]
+    assert s["zero_density_skipped"] == 1

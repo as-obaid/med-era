@@ -122,3 +122,25 @@ def jats_to_text(xml: bytes) -> str:
 def article_meta(xml: bytes) -> dict:
     root = _parse(xml)
     return {"article_type": root.get("article-type", ""), "lang": root.get(XML_LANG, ""), "title": _title(root)}
+
+
+CC_URL = re.compile(r"creativecommons\.org/(?:licenses/((?:by|nc|nd|sa)(?:-(?:by|nc|nd|sa))*)|publicdomain/(zero|mark))",
+                    re.IGNORECASE)
+
+
+def article_license(xml: bytes) -> str:
+    """License from the article's <permissions><license>: Creative Commons URLs normalized to Europe PMC's
+    vocabulary ("cc by-nc-nd", "cc0"), else @license-type, else "xml: " + the first 100 characters of the
+    license text (e.g. publisher COVID-19 grants). "" when the XML has no <license>."""
+    lic = _parse(xml).find(".//permissions/license")
+    if lic is None:
+        return ""
+    text = _clean(" ".join(lic.itertext()))
+    hrefs = [v for el in lic.iter() for k, v in el.attrib.items() if k.endswith("href")]
+    for s in hrefs + [text]:
+        m = CC_URL.search(s)
+        if m:
+            return {"zero": "cc0", "mark": "public domain"}[m.group(2).lower()] if m.group(2) else f"cc {m.group(1).lower()}"
+    if lic.get("license-type"):
+        return lic.get("license-type")
+    return f"xml: {text[:100].rstrip()}" if text else ""

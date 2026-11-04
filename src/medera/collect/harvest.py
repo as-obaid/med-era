@@ -9,7 +9,7 @@ from pathlib import Path
 from medera.collect.manifest import COLUMNS, append_row, pmcid_key, read_manifest, write_manifest
 from medera.collect.query import window_query
 from medera.preprocess.filters import is_usable
-from medera.preprocess.jats import jats_to_text
+from medera.preprocess.jats import article_license, jats_to_text
 
 TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9]*(?:\s[^<>]*)?/?>")  # HTML tags only, so "p < 0.05" survives
 WORD = re.compile(r"\w+")
@@ -61,7 +61,7 @@ def manifest_row(result: dict, window: str, query_id: str, xml: bytes, retrieved
         "first_pub_date": result.get("firstPublicationDate") or "",
         "pub_year": result.get("pubYear") or "",
         "window": window,
-        "license": result.get("license") or "",
+        "license": result.get("license") or article_license(xml),
         "matched_terms": "; ".join(matched_terms(result, cfg)),
         "query_id": query_id,
         "n_chars": len(jats_to_text(xml)),
@@ -75,6 +75,10 @@ def _write_atomic(path: Path, data: bytes) -> None:
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
+
+
+def _file_date(path: Path) -> str:
+    return date.fromtimestamp(path.stat().st_mtime).isoformat()
 
 
 def _skip_no_pmcid(result, stats) -> None:
@@ -104,7 +108,8 @@ def harvest(client, cfg, window, query_id, data_root, limit=None, resume=False, 
     # Usable = passes the same filters as `preprocess text`; existing rows are judged from the XML on disk.
     usable_by_pmcid = {r["pmcid"]: is_usable((xml_dir / f"{r['pmcid']}.xml").read_bytes(), filters) for r in kept}
     usable = sum(usable_by_pmcid.values())
-    stats = {"written": 0, "not_found": 0, "fetch_errors": 0, "parse_failures": 0, "no_pmcid": 0}
+    # written = downloaded this run; reused = rebuilt from XML already on disk (resume only, never refetched)
+    stats = {"written": 0, "reused": 0, "not_found": 0, "fetch_errors": 0, "parse_failures": 0, "no_pmcid": 0}
 
     q = window_query(cfg, query_id, window, cfg["harvest_access"])
     page_size = cfg["polite"]["page_size"]
@@ -118,14 +123,16 @@ def harvest(client, cfg, window, query_id, data_root, limit=None, resume=False, 
                 _skip_no_pmcid(r, stats)
             elif r["pmcid"] not in done:
                 pool.setdefault(r["pmcid"], r)
-        candidates = sorted(pool.values(), key=lambda r: (-hrt_density(r, cfg), pmcid_key(r["pmcid"])))
-        print(f"[harvest] {window}/{query_id}: {len(candidates)} ranked candidates not yet in the manifest",
-              flush=True)
+        ranked = sorted(pool.values(), key=lambda r: (-hrt_density(r, cfg), pmcid_key(r["pmcid"])))
+        candidates = [r for r in ranked if hrt_density(r, cfg) > 0]  # never add a zero-density document
+        stats["zero_density_skipped"] = len(ranked) - len(candidates)
+        print(f"[harvest] {window}/{query_id}: {len(candidates)} ranked candidates not yet in the manifest "
+              f"({stats['zero_density_skipped']} with zero title+abstract HRT density are never added)", flush=True)
     elif rank_by is not None:
         raise ValueError(f"unknown rank_by {rank_by!r}")
 
     for result in candidates:
-        if limit is not None and stats["written"] >= limit:
+        if limit is not None and stats["written"] + stats["reused"] >= limit:  # --limit = max NEW manifest rows
             break
         if top_up_to is not None and usable >= top_up_to:
             break
@@ -135,6 +142,20 @@ def harvest(client, cfg, window, query_id, data_root, limit=None, resume=False, 
             continue
         if pmcid in done:
             continue
+        local = xml_dir / f"{pmcid}.xml"
+        if resume and local.exists():
+            xml = local.read_bytes()
+            try:
+                row = manifest_row(result, window, query_id, xml, _file_date(local), cfg)
+            except ValueError:
+                row = None  # unparseable local copy: fetch it again below
+            if row is not None:
+                append_row(man_path, row)
+                done.add(pmcid)
+                stats["reused"] += 1
+                usable_by_pmcid[pmcid] = is_usable(xml, filters)
+                usable += usable_by_pmcid[pmcid]
+                continue
         try:
             xml = client.fulltext_xml(pmcid)
         except RuntimeError as e:  # retries exhausted; a later --resume run tries it again
@@ -168,7 +189,7 @@ def harvest(client, cfg, window, query_id, data_root, limit=None, resume=False, 
         missing_license=sum(not r["license"] for r in rows),
         outside_window=sum(not (lo <= r["first_pub_date"] <= hi) for r in rows),
     )
-    print(f"[harvest] {window}/{query_id} this run: written={stats['written']} "
+    print(f"[harvest] {window}/{query_id} this run: written={stats['written']} reused_local={stats['reused']} "
           f"not_found(404/500)={stats['not_found']} fetch_errors={stats['fetch_errors']} "
           f"xml_parse_failures={stats['parse_failures']} no_pmcid={stats['no_pmcid']}", flush=True)
     print(f"[harvest] {man_path}: rows={stats['manifest_rows']} usable(filters)={stats['usable']} "
