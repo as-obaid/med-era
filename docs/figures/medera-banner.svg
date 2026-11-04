@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="t d">
+  <title id="t">MedEra: Temporal Adaptation of Medical LLMs</title>
+  <desc id="d">The same model is adapted on medical literature from one era at a time, and the study asks whether its clinical answers shift to match that era. Case study: hormone replacement therapy for menopause. A 2011 to 2026 timeline shows three eras (w1 2011–2015, w2 2016–2020, w3 2021–2026) with the ELITE trial (2016), the NAMS 2017 position statement and the NAMS 2022 position statement. Europe PMC open-access literature from each era trains one LoRA adapter; every variant gets the same HRT questions, and the answers are compared with markers, a rubric and embeddings. Models: Qwen3.5-27B (dense) and Gemma-4-26B-A4B (mixture of experts).</desc>
+  <defs>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #1B2330; }
+      .b { font-weight: 700; }
+      .m { font-weight: 500; }
+      .slate { fill: #4B5563; }
+      .muted { fill: #6B7280; }
+      .blue { fill: #18539D; }
+      .white { fill: #FFFFFF; }
+      .box { fill: #FFFFFF; stroke: #5B6676; stroke-width: 1.25; }
+      .line { stroke: #5B6676; stroke-width: 1.5; fill: none; }
+      .hair { stroke: #E3E6EA; stroke-width: 1; }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B6676"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="640" fill="#FCFCFB"/>
+
+  <!-- Header: wordmark, subtitle, models -->
+  <text x="62" y="106" font-size="80" class="b" letter-spacing="-1.5">Med<tspan class="blue">Era</tspan></text>
+  <text x="64" y="146" font-size="27" class="m slate">Temporal Adaptation of Medical LLMs</text>
+
+  <g font-size="13">
+    <rect x="64" y="168" width="168" height="28" rx="14" class="box"/>
+    <text x="80" y="187"><tspan class="b">Qwen3.5-27B</tspan><tspan class="slate">&#160;· dense</tspan></text>
+    <rect x="242" y="168" width="418" height="28" rx="14" class="box"/>
+    <text x="258" y="187"><tspan class="b">Gemma-4-26B-A4B</tspan><tspan class="slate">&#160;· MoE · standard vs expert-targeted LoRA</tspan></text>
+  </g>
+
+  <!-- Header: the question -->
+  <text x="716" y="72" font-size="12" class="b blue" letter-spacing="1.6">THE QUESTION</text>
+  <g font-size="19">
+    <text x="716" y="101">The same model is adapted on medical literature</text>
+    <text x="716" y="127">from one era at a time. Do its clinical answers</text>
+    <text x="716" y="153">shift to match the era it read?</text>
+  </g>
+  <text x="716" y="187" font-size="15"><tspan class="b">Case study:</tspan><tspan class="slate">&#160;hormone replacement therapy (HRT) for menopause</tspan></text>
+
+  <line x1="64" y1="214" x2="1216" y2="214" class="hair"/>
+
+  <!-- Step labels -->
+  <g font-size="15.5">
+    <circle cx="76" cy="306" r="11" fill="#18539D"/>
+    <text x="76" y="311" font-size="13" class="b white" text-anchor="middle">1</text>
+    <text x="96" y="311" class="b">Era literature</text>
+    <text x="96" y="330" font-size="14" class="slate">Europe PMC</text>
+    <text x="96" y="347" font-size="14" class="slate">open access</text>
+
+    <circle cx="76" cy="422" r="11" fill="#18539D"/>
+    <text x="76" y="427" font-size="13" class="b white" text-anchor="middle">2</text>
+    <text x="96" y="427" class="b">LoRA adapters</text>
+    <text x="96" y="446" font-size="14" class="slate">one per era</text>
+
+    <circle cx="76" cy="493" r="11" fill="#18539D"/>
+    <text x="76" y="498" font-size="13" class="b white" text-anchor="middle">3</text>
+    <text x="96" y="498" class="b">Same questions</text>
+    <text x="96" y="517" font-size="14" class="slate">for every variant</text>
+
+    <circle cx="76" cy="564" r="11" fill="#18539D"/>
+    <text x="76" y="569" font-size="13" class="b white" text-anchor="middle">4</text>
+    <text x="96" y="569" class="b">Compare answers</text>
+    <text x="96" y="588" font-size="14" class="slate">markers, rubric</text>
+    <text x="96" y="605" font-size="14" class="slate">and embeddings</text>
+  </g>
+
+  <!-- Milestone flags (x = 272 + 59 per year; mid-year) -->
+  <g font-size="15">
+    <line x1="596.5" y1="228" x2="596.5" y2="272" class="line"/>
+    <text x="589" y="240" text-anchor="end"><tspan class="b">ELITE trial</tspan><tspan class="slate">&#160;2016</tspan></text>
+    <line x1="655.5" y1="228" x2="655.5" y2="272" class="line"/>
+    <text x="663" y="240"><tspan class="b">NAMS 2017</tspan><tspan class="slate">&#160;position statement</tspan></text>
+    <line x1="950.5" y1="228" x2="950.5" y2="272" class="line"/>
+    <text x="958" y="240"><tspan class="b">NAMS 2022</tspan><tspan class="slate">&#160;position statement</tspan></text>
+  </g>
+
+  <!-- Era bands -->
+  <rect x="272" y="272" width="291" height="78" rx="10" fill="#F1F5FB" stroke="#C9D8EC" stroke-width="1"/>
+  <rect x="571" y="272" width="287" height="78" rx="10" fill="#E6EEF8" stroke="#AFC6E5" stroke-width="1"/>
+  <rect x="866" y="272" width="350" height="78" rx="10" fill="#DAE6F4" stroke="#8FB0DB" stroke-width="1"/>
+
+  <circle cx="596.5" cy="272" r="4.5" fill="#18539D" stroke="#FCFCFB" stroke-width="2"/>
+  <circle cx="655.5" cy="272" r="4.5" fill="#18539D" stroke="#FCFCFB" stroke-width="2"/>
+  <circle cx="950.5" cy="272" r="4.5" fill="#18539D" stroke="#FCFCFB" stroke-width="2"/>
+
+  <g font-size="16">
+    <text x="288" y="299"><tspan class="b blue">w1</tspan><tspan class="b">&#160;&#160;2011–2015</tspan></text>
+    <text x="288" y="320" font-size="15" class="slate">Before ELITE and the</text>
+    <text x="288" y="338" font-size="15" class="slate">2017 NAMS statement</text>
+
+    <text x="587" y="299"><tspan class="b blue">w2</tspan><tspan class="b">&#160;&#160;2016–2020</tspan></text>
+    <text x="587" y="320" font-size="15" class="slate">Start under 60 or within</text>
+    <text x="587" y="338" font-size="15" class="slate">10 years of menopause</text>
+
+    <text x="882" y="299"><tspan class="b blue">w3</tspan><tspan class="b">&#160;&#160;2021–2026</tspan></text>
+    <text x="882" y="320" font-size="15" class="slate">Individualized prescribing,</text>
+    <text x="882" y="338" font-size="15" class="slate">not for prevention alone</text>
+  </g>
+
+  <!-- Timeline axis: segmented era bar, yearly ticks -->
+  <rect x="272" y="356" width="291" height="6" rx="3" fill="#9CBCE3"/>
+  <rect x="571" y="356" width="287" height="6" rx="3" fill="#4F86CB"/>
+  <rect x="866" y="356" width="350" height="6" rx="3" fill="#18539D"/>
+  <g stroke="#9AA3AE" stroke-width="1">
+    <line x1="272" y1="365" x2="272" y2="370"/><line x1="331" y1="365" x2="331" y2="368"/>
+    <line x1="390" y1="365" x2="390" y2="368"/><line x1="449" y1="365" x2="449" y2="368"/>
+    <line x1="508" y1="365" x2="508" y2="368"/><line x1="567" y1="365" x2="567" y2="370"/>
+    <line x1="626" y1="365" x2="626" y2="368"/><line x1="685" y1="365" x2="685" y2="368"/>
+    <line x1="744" y1="365" x2="744" y2="368"/><line x1="803" y1="365" x2="803" y2="368"/>
+    <line x1="862" y1="365" x2="862" y2="370"/><line x1="921" y1="365" x2="921" y2="368"/>
+    <line x1="980" y1="365" x2="980" y2="368"/><line x1="1039" y1="365" x2="1039" y2="368"/>
+    <line x1="1098" y1="365" x2="1098" y2="368"/><line x1="1157" y1="365" x2="1157" y2="368"/>
+    <line x1="1216" y1="365" x2="1216" y2="370"/>
+  </g>
+  <g font-size="13" class="muted" text-anchor="middle">
+    <text x="301.5" y="384" class="muted">2011</text>
+    <text x="596.5" y="384" class="muted">2016</text>
+    <text x="891.5" y="384" class="muted">2021</text>
+    <text x="1186.5" y="384" class="muted">2026</text>
+  </g>
+
+  <!-- Arrows: literature to adapters -->
+  <line x1="417.5" y1="372" x2="417.5" y2="404" class="line" marker-end="url(#ah)"/>
+  <line x1="714.5" y1="372" x2="714.5" y2="404" class="line" marker-end="url(#ah)"/>
+  <line x1="1041" y1="372" x2="1041" y2="404" class="line" marker-end="url(#ah)"/>
+
+  <!-- Adapters -->
+  <g font-size="14.5">
+    <rect x="299.5" y="406" width="236" height="38" rx="19" class="box"/>
+    <circle cx="321.5" cy="425" r="6" fill="#9CBCE3"/>
+    <text x="335.5" y="430">same model +&#160;<tspan class="b">w1 adapter</tspan></text>
+    <rect x="596.5" y="406" width="236" height="38" rx="19" class="box"/>
+    <circle cx="618.5" cy="425" r="6" fill="#4F86CB"/>
+    <text x="632.5" y="430">same model +&#160;<tspan class="b">w2 adapter</tspan></text>
+    <rect x="923" y="406" width="236" height="38" rx="19" class="box"/>
+    <circle cx="945" cy="425" r="6" fill="#18539D"/>
+    <text x="959" y="430">same model +&#160;<tspan class="b">w3 adapter</tspan></text>
+  </g>
+
+  <!-- Arrows: adapters to questions -->
+  <line x1="417.5" y1="446" x2="417.5" y2="470" class="line" marker-end="url(#ah)"/>
+  <line x1="714.5" y1="446" x2="714.5" y2="470" class="line" marker-end="url(#ah)"/>
+  <line x1="1041" y1="446" x2="1041" y2="470" class="line" marker-end="url(#ah)"/>
+
+  <!-- The same HRT questions -->
+  <rect x="272" y="472" width="944" height="44" rx="10" fill="#F3F5F9" stroke="#5B6676" stroke-width="1.25" stroke-dasharray="5 4"/>
+  <text x="744" y="499" font-size="14.5" text-anchor="middle"><tspan class="b">The same HRT questions</tspan><tspan class="slate">&#160;·&#160;eligibility · timing and age · cardiovascular prevention · contraindications · dosing · patient vignettes</tspan></text>
+
+  <!-- Arrows: questions to answers -->
+  <line x1="417.5" y1="518" x2="417.5" y2="542" class="line" marker-end="url(#ah)"/>
+  <line x1="714.5" y1="518" x2="714.5" y2="542" class="line" marker-end="url(#ah)"/>
+  <line x1="1041" y1="518" x2="1041" y2="542" class="line" marker-end="url(#ah)"/>
+
+  <!-- Answers, compared across eras -->
+  <g font-size="15">
+    <path d="M337.5,544 h160 a12,12 0 0 1 12,12 v18 a12,12 0 0 1 -12,12 h-140 l-12,10 v-10 h-8 a12,12 0 0 1 -12,-12 v-18 a12,12 0 0 1 12,-12 z" class="box"/>
+    <circle cx="373.5" cy="565" r="6" fill="#9CBCE3"/>
+    <text x="387.5" y="570"><tspan class="b">w1</tspan>&#160;answers</text>
+    <path d="M634.5,544 h160 a12,12 0 0 1 12,12 v18 a12,12 0 0 1 -12,12 h-140 l-12,10 v-10 h-8 a12,12 0 0 1 -12,-12 v-18 a12,12 0 0 1 12,-12 z" class="box"/>
+    <circle cx="670.5" cy="565" r="6" fill="#4F86CB"/>
+    <text x="684.5" y="570"><tspan class="b">w2</tspan>&#160;answers</text>
+    <path d="M961,544 h160 a12,12 0 0 1 12,12 v18 a12,12 0 0 1 -12,12 h-140 l-12,10 v-10 h-8 a12,12 0 0 1 -12,-12 v-18 a12,12 0 0 1 12,-12 z" class="box"/>
+    <circle cx="997" cy="565" r="6" fill="#18539D"/>
+    <text x="1011" y="570"><tspan class="b">w3</tspan>&#160;answers</text>
+  </g>
+  <line x1="519" y1="565" x2="615" y2="565" class="line" stroke-dasharray="4 4" marker-start="url(#ah)" marker-end="url(#ah)"/>
+  <line x1="816" y1="565" x2="941" y2="565" class="line" stroke-dasharray="4 4" marker-start="url(#ah)" marker-end="url(#ah)"/>
+</svg>

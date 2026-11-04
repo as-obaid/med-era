@@ -1,0 +1,51 @@
+# Internal (never published)
+docs/dev/
+claude.md
+CLAUDE.md
+
+# Corpus text stays local; manifests in data/manifests/ are committed
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Model weights and adapters (adapters stay private)
+adapters/
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+*.gguf
+
+# HPC logs
+logs/
+slurm-*.out
+*.err
+
+# Secrets
+.env
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Cluster-local state, all kept inside the repo clone on /scratch
+.env-medera/
+.cache/
+tmp/
+runs/
+data/smoke/
+hpc/env.local.sh
