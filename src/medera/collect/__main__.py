@@ -6,28 +6,42 @@ from pathlib import Path
 from medera.collect.europepmc import EuropePMC
 from medera.collect.harvest import harvest
 from medera.collect.manifest import DROPPED_COLUMNS, merge, read_manifest, write_manifest
-from medera.collect.query import COUNT_COLUMNS, count_rows
+from medera.collect.query import COUNT_COLUMNS, PART_COLUMNS, count_rows, or_guard, part_count_rows
 from medera.config import load_yaml
 from medera.preprocess.filters import is_usable
 
 
-def make_client(cfg: dict) -> EuropePMC:
+def make_client(cfg: dict, pause_s: float | None = None) -> EuropePMC:
     p = cfg["polite"]
     return EuropePMC(cfg["api_base"], cfg["user_agent"], max_retries=p["max_retries"], backoff_s=p["backoff_s"],
-                     timeout_s=p["timeout_s"], pause_s=p["pause_s"])
+                     timeout_s=p["timeout_s"], pause_s=p["pause_s"] if pause_s is None else pause_s)
+
+
+def _write_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, columns)
+        w.writeheader()
+        w.writerows(rows)
 
 
 def cmd_count(cfg, root: Path, args) -> None:
-    rows = count_rows(make_client(cfg), cfg)
-    path = root / "manifests" / "counts.csv"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, COUNT_COLUMNS)
-        w.writeheader()
-        w.writerows(rows)
+    client = make_client(cfg, pause_s=cfg["polite"].get("count_pause_s", 1.0))
+    rows = count_rows(client, cfg)
+    parts = part_count_rows(client, cfg)
+    _write_csv(root / "manifests" / "counts.csv", COUNT_COLUMNS, rows)
+    _write_csv(root / "manifests" / "counts_parts.csv", PART_COLUMNS, parts)
     for r in rows:
         print(f"[count] {r['query_id']:5s} {r['window']} {r['access']:11s} {r['hit_count']:>7}")
-    print(f"[count] wrote {path}")
+    for r in parts:
+        print(f"[count]   part {r['part']:22s} {r['window']} {r['access']:11s} {r['hit_count']:>7}")
+    print(f"[count] wrote {root / 'manifests' / 'counts.csv'} and counts_parts.csv")
+    fails = or_guard(rows, parts)
+    for f in fails:
+        print(f"[count] GUARD FAILED: {f}", flush=True)
+    if fails:
+        raise SystemExit(1)
+    print("[count] OR guard passed: every query returns at least its largest part")
 
 
 def cmd_harvest(cfg, root: Path, args) -> None:
@@ -83,8 +97,10 @@ def main(argv=None) -> None:
     h = sub.add_parser("harvest", parents=[common], help="download one window's full-text XML + manifest")
     h.add_argument("--window", required=True)
     h.add_argument("--query", required=True, choices=["core", "broad"])
-    h.add_argument("--limit", type=int, default=None, help="max NEW rows this run")
-    h.add_argument("--resume", action="store_true", help="keep the manifest and skip PMCIDs already done")
+    h.add_argument("--limit", type=int, default=None,
+                   help="max NEW manifest rows this run (downloaded, or rebuilt from local XML with --resume)")
+    h.add_argument("--resume", action="store_true",
+                   help="keep the manifest, skip PMCIDs already in it, and rebuild rows from XML already on disk")
     h.add_argument("--rank-by", choices=["hrt-density"], default=None)
     h.add_argument("--top-up-to", type=int, default=None, help="stop at N usable rows (implies --resume)")
     sub.add_parser("merge", parents=[common], help="dedupe window manifests -> hrt_all.csv")

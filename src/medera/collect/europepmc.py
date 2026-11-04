@@ -62,10 +62,11 @@ class EuropePMC:
     def hit_count(self, q: str) -> int:
         return int(self._search_page(q, 1, "*", result_type="lite")["hitCount"])
 
-    def search(self, q: str, page_size: int = 1000) -> Iterator[dict]:
+    def search(self, q: str, page_size: int = 1000, result_type: str = "core") -> Iterator[dict]:
+        """All results, by cursorMark. result_type "idlist" lists IDs only (metadata paging, no full text)."""
         cursor = "*"
         while True:
-            data = self._search_page(q, page_size, cursor)
+            data = self._search_page(q, page_size, cursor, result_type=result_type)
             results = (data.get("resultList") or {}).get("result") or []
             yield from results
             nxt = data.get("nextCursorMark")

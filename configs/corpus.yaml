@@ -10,7 +10,20 @@ windows:            # assigned by first publication date (FIRST_PDATE)
   w3: ["2021-01-01", "2026-12-31"]
 
 queries:
-  core: '((TITLE_ABS:"hormone replacement therapy" OR TITLE_ABS:"menopausal hormone therapy" OR TITLE_ABS:"estrogen replacement therapy" OR TITLE_ABS:"oestrogen replacement therapy") OR ((TITLE_ABS:"hormone therapy" OR TITLE_ABS:"estrogen therapy" OR TITLE_ABS:"oestrogen therapy") AND TITLE_ABS:(menopause OR menopausal OR postmenopausal OR perimenopausal OR climacteric)) OR (KW:"hormone replacement therapy" OR KW:"menopausal hormone therapy" OR KW:"estrogen replacement therapy" OR KW:"oestrogen replacement therapy") OR MESH:"Hormone Replacement Therapy" OR MESH:"Estrogen Replacement Therapy")'
+  # core is a list of parts. The builder (medera.collect.query.base_query) wraps every part in its own
+  # parentheses and joins them with OR: "((p1) OR (p2) OR (p3) OR (p4))". A bare `A OR B` at the top
+  # level of an OR (the old ungrouped MESH pair) makes Europe PMC mis-parse the whole query, and
+  # `count` now fails if core returns fewer hits than its largest part (counts_parts.csv).
+  core:
+    parts:
+      - name: title_abs_phrases
+        query: 'TITLE_ABS:"hormone replacement therapy" OR TITLE_ABS:"menopausal hormone therapy" OR TITLE_ABS:"estrogen replacement therapy" OR TITLE_ABS:"oestrogen replacement therapy"'
+      - name: generic_and_menopause
+        query: '(TITLE_ABS:"hormone therapy" OR TITLE_ABS:"estrogen therapy" OR TITLE_ABS:"oestrogen therapy") AND TITLE_ABS:(menopause OR menopausal OR postmenopausal OR perimenopausal OR climacteric)'
+      - name: kw_phrases
+        query: 'KW:"hormone replacement therapy" OR KW:"menopausal hormone therapy" OR KW:"estrogen replacement therapy" OR KW:"oestrogen replacement therapy"'
+      - name: mesh
+        query: 'MESH:"Hormone Replacement Therapy" OR MESH:"Estrogen Replacement Therapy"'
   broad: 'TITLE_ABS:(menopause OR menopausal OR postmenopausal OR perimenopausal OR climacteric)'
 query_suffix: ' AND FIRST_PDATE:[{date_from} TO {date_to}] AND LANG:eng'
 access:
@@ -52,3 +65,4 @@ polite:
   backoff_s: 1.0
   timeout_s: 60
   page_size: 1000
+  count_pause_s: 1.0             # spacing between hitCount calls in `count` (incl. the per-part guard)

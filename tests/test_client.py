@@ -130,3 +130,11 @@ def test_pause_between_requests(fake_http):
     client.hit_count("a")
     client.hit_count("b")
     assert sleeps == [0.2]
+
+
+def test_search_idlist_pages_metadata_only(fake_http):
+    Session, Resp = fake_http
+    session = Session([Resp(json_data=_page([{"pmcid": "PMC1"}], "A")), Resp(json_data=_page([], "A"))])
+    out = list(_client(session, []).search("q", page_size=200, result_type="idlist"))
+    assert [r["pmcid"] for r in out] == ["PMC1"]
+    assert {(c["params"]["resultType"], c["params"]["pageSize"]) for c in session.calls} == {("idlist", 200)}
