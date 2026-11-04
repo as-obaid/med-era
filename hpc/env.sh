@@ -21,8 +21,18 @@ export MPLCONFIGDIR="$_medera_cache/matplotlib"
 export XDG_CACHE_HOME="$_medera_cache"
 export TMPDIR="$MEDERA_ROOT/tmp"
 export PYTHONNOUSERSITE=1
+export WANDB_DIR="$_medera_cache/wandb"
+export WANDB_CACHE_DIR="$_medera_cache/wandb/cache"
+export WANDB_CONFIG_DIR="$_medera_cache/wandb/config"
+export WANDB_DATA_DIR="$_medera_cache/wandb/data"
 
-mkdir -p "$_medera_cache" "$TMPDIR" "$MEDERA_ROOT/runs/logs"
+mkdir -p "$_medera_cache" "$TMPDIR" "$MEDERA_ROOT/runs/logs" "$WANDB_CACHE_DIR" "$WANDB_CONFIG_DIR" "$WANDB_DATA_DIR"
+
+# W&B credentials (gitignored .env, chmod 600): loaded without ever echoing values.
+case $- in *x*) _medera_xtrace=1; set +x ;; esac
+if [ -f "$MEDERA_ROOT/.env" ]; then set -a; . "$MEDERA_ROOT/.env"; set +a; fi
+if [ -n "${WANDB_API_KEY:-}" ]; then echo "W&B: key loaded" >&2; else echo "W&B: no key, logging disabled" >&2; fi
+if [ -n "${_medera_xtrace:-}" ]; then unset _medera_xtrace; set -x; fi
 # Optional user-specific overrides (gitignored).
 if [ -f "$MEDERA_ROOT/hpc/env.local.sh" ]; then source "$MEDERA_ROOT/hpc/env.local.sh"; fi
 if [ -x "$MEDERA_ENV/bin/python" ]; then source "$MEDERA_ENV/bin/activate"; fi
