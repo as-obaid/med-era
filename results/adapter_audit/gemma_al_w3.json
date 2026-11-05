@@ -1,0 +1,67 @@
+{
+  "arm": "gemma_al",
+  "expect_experts": false,
+  "groups": {
+    "attention": {
+      "lora_tensors": 230,
+      "lora_params": 11489280,
+      "lora_nonzero_grad": 230,
+      "base_params": 1110197760,
+      "base_dtypes": {
+        "bfloat16": 1110197760
+      }
+    },
+    "dense_mlp": {
+      "lora_tensors": 180,
+      "lora_params": 7096320,
+      "lora_nonzero_grad": 180,
+      "base_params": 535265280,
+      "base_dtypes": {
+        "bfloat16": 535265280
+      }
+    },
+    "router": {
+      "lora_tensors": 60,
+      "lora_params": 1413120,
+      "lora_nonzero_grad": 60,
+      "base_params": 10901760,
+      "base_dtypes": {
+        "bfloat16": 10901760
+      }
+    },
+    "experts": {
+      "lora_tensors": 0,
+      "lora_params": 0,
+      "lora_nonzero_grad": 0,
+      "base_params": 22837985280,
+      "base_dtypes": {
+        "bfloat16": 22837985280
+      }
+    },
+    "vision": {
+      "lora_tensors": 0,
+      "lora_params": 0,
+      "lora_nonzero_grad": 0,
+      "base_params": 572792112,
+      "base_dtypes": {
+        "bfloat16": 572792112
+      }
+    },
+    "other": {
+      "lora_tensors": 0,
+      "lora_params": 0,
+      "lora_nonzero_grad": 0,
+      "base_params": 738791680,
+      "base_dtypes": {
+        "bfloat16": 738791680
+      }
+    }
+  },
+  "lora_tensors": 470,
+  "lora_params": 19998720,
+  "lora_nonzero_grad": 470,
+  "base_params": 25805933872,
+  "window": "w3",
+  "precision": "bf16",
+  "model": "gemma4_26b_a4b"
+}
