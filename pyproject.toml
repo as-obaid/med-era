@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "medera"
 version = "0.1.0"
-description = "Studying how LoRA/QLoRA training on medical literature from different eras shifts LLM responses."
+description = "Studying how LoRA training on medical literature from different eras shifts LLM responses."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Muhammad Obaidullah", email = "abdulsalam.m@northeastern.edu" }]
@@ -22,6 +22,7 @@ train = [
   "flash-linear-attention==0.5.1",
 ]
 dev = ["pytest>=8"]
+report = ["matplotlib>=3.9"]   # CPU figures: medera.measure.perplexity --figure, medera.train.report
 
 [tool.setuptools.packages.find]
 where = ["src"]
