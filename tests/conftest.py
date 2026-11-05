@@ -76,3 +76,10 @@ def _no_tracking(monkeypatch):
     """Tests never talk to W&B: no key, tracking disabled."""
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
     monkeypatch.setenv("WANDB_MODE", "disabled")
+
+
+@pytest.fixture(autouse=True)
+def _no_job_deadline(monkeypatch):
+    """Tests run inside Slurm jobs too (Explorer CPU pytest): the job's own end time must not stop the code under test."""
+    monkeypatch.delenv("SLURM_JOB_END_TIME", raising=False)
+    monkeypatch.delenv("MEDERA_JOB_END_EPOCH", raising=False)

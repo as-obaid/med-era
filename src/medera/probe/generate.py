@@ -106,11 +106,17 @@ def generate_chunk(model, tok, cfg: dict, chunk: Chunk, eos: list[int]) -> list[
             for i in range(len(chunk.wordings))]
 
 
+def read_chunk(path: Path) -> list[dict]:
+    """Records of one chunk file. Lines are split on "\\n" only: answers can contain characters that
+    str.splitlines() treats as line breaks (U+0085, U+2028), and the writer escapes them anyway (ASCII JSON)."""
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n") if line.strip()]
+
+
 def chunk_status(path: Path, chunk: Chunk, v: Variant, bsha: str, adapter_sha: str | None) -> str:
     """'missing', 'current' (skip), or raises Refused when a different battery, adapter or variant wrote it."""
     if not path.exists():
         return "missing"
-    recs = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    recs = read_chunk(path)
     bad = [r for r in recs if (r.get("battery_sha256"), r.get("adapter_sha256"), r.get("variant"), r.get("chunk"))
            != (bsha, adapter_sha, v.name, chunk.id)]
     if bad or len(recs) != len(chunk.wordings):
@@ -156,7 +162,7 @@ def run_variant(v: Variant, cfg: dict, model_and_tok, out_dir: Path, stopper: St
                 "question": w.question, "mode": c.mode, "seed": c.seed, "chunk": c.id, "chunk_seed": c.torch_seed,
                 "index_in_chunk": k, **a, "decoding": settings, "batch_size": cfg["decoding"]["batch_size"],
                 "stop": cfg["stop"], "eos_ids": eos, "battery_sha256": bsha, **meta, "provenance": prov,
-                "chunk_seconds": round(secs, 2), "created": now}, ensure_ascii=False))
+                "chunk_seconds": round(secs, 2), "created": now}))   # ASCII JSON: one record per physical line
         write_text_atomic(out_dir / f"{c.id}.jsonl", "\n".join(lines) + "\n")
         done_n += 1
         write_progress(progress, {"step": done_n}, len(plan), prov)

@@ -135,7 +135,7 @@ def test_chunks_are_written_once_resumed_and_complete(tmp_path):
     assert sorted(p.name for p in out.iterdir()) == ["sampled-s1-c00.jsonl", "sampled-s1-c01.jsonl"]
     assert json.loads((tmp_path / "progress.json").read_text())["step"] == 2
     assert _run(tmp_path, cfg, CountingStopper(99), loads) == "done" and len(loads) == 2
-    recs = [json.loads(line) for c in plan for line in (out / f"{c.id}.jsonl").read_text().splitlines()]
+    recs = [r for c in plan for r in gen.read_chunk(out / f"{c.id}.jsonl")]
     assert len(recs) == 7 * 3 and (out / "DONE").exists()
     r = recs[0]
     assert (r["variant"], r["probe_id"], r["paraphrase_id"], r["mode"], r["seed"], r["chunk_seed"]) == \
@@ -146,6 +146,20 @@ def test_chunks_are_written_once_resumed_and_complete(tmp_path):
     assert {(x["probe_id"], x["paraphrase_id"]) for x in recs if x["mode"] == "greedy"} == \
         {(x["probe_id"], x["paraphrase_id"]) for x in recs if x["seed"] == 2}
     assert _run(tmp_path, cfg, CountingStopper(99), loads) == "done" and len(loads) == 2   # idempotent: no model
+
+
+def test_answers_with_unicode_line_separators_stay_one_record_per_line(tmp_path, monkeypatch):
+    """A real answer can contain U+0085 or U+2028, which str.splitlines() splits on: records must survive."""
+    cfg, loads = _small_cfg(), []
+    monkeypatch.setattr(gen, "generate_chunk", lambda model, tok, cfg, c, eos: [
+        {"text": "a\x85b\u2028c", "text_raw": "a\x85b\u2028c", "finish": "length", "n_new_tokens": 6}
+        for _ in c.wordings])
+    assert _run(tmp_path, cfg, CountingStopper(99), loads) == "done"
+    out = tmp_path / "answers" / "qwen_w1"
+    recs = gen.read_chunk(out / "sampled-s1-c00.jsonl")
+    assert len(recs) == 4 and recs[0]["text"] == "a\x85b\u2028c"
+    assert len((out / "sampled-s1-c00.jsonl").read_text().splitlines()) == 4          # ASCII JSON on disk
+    assert _run(tmp_path, cfg, CountingStopper(99), loads) == "done" and len(loads) == 1
 
 
 def test_answers_from_another_battery_or_adapter_are_refused(tmp_path):
