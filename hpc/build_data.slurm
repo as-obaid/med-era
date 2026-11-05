@@ -10,7 +10,8 @@
 # (CentOS 7) cannot load numpy or torch, so the env is checked and the data is built here:
 #   1. pytest (env check on the compute-node OS, incl. the tiny Gemma-4 expert-LoRA recipe on CPU)
 #   2. merge, only with the `merge` argument: smoke data, whose articles are not relevance-screened, so it
-#      also passes --no-relevance-screen. The real corpus needs data/manifests/relevance_labels.csv.
+#      also passes --no-relevance-screen. The real corpus needs data/manifests/relevance_labels.csv and
+#      hrt_excluded.csv (the single source of truth: preprocessing asserts kept == hrt_all - hrt_excluded).
 #   3. preprocess text, then pack for both models (tokenizers from the local HF cache)
 #   sbatch hpc/build_data.slurm data/smoke merge     # smoke data (submit_smoke.sh does this)
 #   sbatch hpc/build_data.slurm data                 # real corpus, after the harvest

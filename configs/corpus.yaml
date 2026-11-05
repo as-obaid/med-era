@@ -49,6 +49,7 @@ filters:
   exclude_title_regex: '^\s*(correction|corrigendum|erratum|errata|retraction|retracted|notice of retraction|expression of concern)\b'
   languages: [en]
   relevance_labels: manifests/relevance_labels.csv   # under --data-root; written by `collect screen-import`
+  excluded_manifest: manifests/hrt_excluded.csv      # single source of truth for exclusions (runbook Task 5)
   keep_labels: [relevant, borderline]                # every harvested article must have a label (hard error)
 
 topup_rule:                     # pre-registered w1 top-up rule, judged after the relevance screen (runbook Task 7)

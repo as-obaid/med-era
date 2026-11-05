@@ -35,21 +35,53 @@ def load_relevance_labels(cfg: dict, root: Path, rows: list[dict], opt_out: bool
     return labels
 
 
+def load_excluded(cfg: dict, root: Path) -> dict[str, str]:
+    """pmcid -> reason from data/manifests/hrt_excluded.csv: the single source of truth for exclusions."""
+    path = root / cfg["filters"]["excluded_manifest"]
+    if not path.exists():
+        raise SystemExit(f"[text] {path} is missing: it is the single source of truth for exclusions "
+                         f"(runbook Task 5). Only smoke data may run without it (--no-relevance-screen).")
+    with open(path, newline="", encoding="utf-8") as f:
+        return {r["pmcid"]: r["reason"] for r in csv.DictReader(f)}
+
+
+def kept_mismatches(rows: list[dict], excluded: dict, texts: dict, reasons: dict) -> list[str]:
+    """Per window, the kept PMCIDs must equal hrt_all minus hrt_excluded."""
+    problems = []
+    for w, kept in texts.items():
+        expected = {r["pmcid"] for r in rows if r["window"] == w} - set(excluded)
+        for p in sorted(expected - set(kept)):
+            problems.append(f"{w} {p}: not in hrt_excluded.csv, but preprocessing dropped it ({reasons[w].get(p)})")
+        for p in sorted(set(kept) - expected):
+            problems.append(f"{w} {p}: listed in hrt_excluded.csv, but preprocessing kept it")
+    return problems
+
+
 def cmd_text(cfg: dict, root: Path, args) -> None:
     corpus = cfg["corpus"]
     rows = read_manifest(root / "manifests" / f"{corpus}_all.csv")
     raw, out = root / "raw" / corpus, root / "processed" / corpus
-    missing = [r["pmcid"] for r in rows if not (raw / r["window"] / f"{r['pmcid']}.xml").exists()]
+    smoke = args.no_relevance_screen
+    if smoke:
+        print("[text] WARNING: SMOKE MODE (--no-relevance-screen): relevance screen and hrt_excluded.csv NOT "
+              "applied; exclusions are re-derived from the XML (smoke data only)", flush=True)
+        excluded, labels = {}, None
+    else:
+        excluded = load_excluded(cfg, root)
+        labels = load_relevance_labels(cfg, root, rows, False)
+    missing = [r["pmcid"] for r in rows
+               if r["pmcid"] not in excluded and not (raw / r["window"] / f"{r['pmcid']}.xml").exists()]
     if missing:
         raise SystemExit(f"[text] {len(missing)} XML files missing under {raw} (first: {missing[:5]})")
-    labels = load_relevance_labels(cfg, root, rows, args.no_relevance_screen)
     keep_labels = set(cfg["filters"]["keep_labels"])
-    out.mkdir(parents=True, exist_ok=True)
     texts = {w: {} for w in cfg["windows"]}
     reasons = {w: {} for w in cfg["windows"]}
     dates = {}
     for r in rows:
         w, pmcid = r["window"], r["pmcid"]
+        if pmcid in excluded:  # the manifest decides, e.g. a retraction whose XML title looks clean
+            reasons[w][pmcid] = excluded[pmcid]
+            continue
         dates[pmcid] = r["first_pub_date"]
         xml = (raw / w / f"{pmcid}.xml").read_bytes()
         try:
@@ -68,37 +100,58 @@ def cmd_text(cfg: dict, root: Path, args) -> None:
     # Near-duplicates across ALL windows, before the held-out split; the later doc of a pair is dropped.
     window_of = {p: w for w, t in texts.items() for p in t}
     pairs = near_duplicates({p: (dates[p], t) for w in texts for p, t in texts[w].items()})
+    for kept, dropped, jac in pairs:
+        del texts[window_of[dropped]][dropped]
+        reasons[window_of[dropped]][dropped] = "near_duplicate"
+    print(f"[text] near-duplicates (5-gram Jaccard >= 0.8): {len(pairs)} dropped", flush=True)
+
+    if not smoke:
+        problems = kept_mismatches(rows, excluded, texts, reasons)
+        for p in problems:
+            print(f"[text] MISMATCH {p}", flush=True)
+        if problems:
+            raise SystemExit(f"[text] kept set != hrt_all minus hrt_excluded: {len(problems)} differences (listed "
+                             f"above). Add them to hrt_excluded.csv (Task 5) or fix the cause; nothing was written.")
+        print("[text] kept set == hrt_all minus hrt_excluded.csv, per window", flush=True)
+
+    cpt = cfg["chars_per_token"]
+    splits, budget = {}, {}
+    for w in cfg["windows"]:
+        texts_w = texts[w]
+        train, held = heldout_split(list(texts_w), cfg["split"]["heldout_frac"], cfg["split"]["seed"])
+        splits[w] = set(held)
+        budget[w] = sum(len(texts_w[p]) for p in train) / cpt
+        screened = Counter(labels[r["pmcid"]] for r in rows if r["window"] == w) if labels is not None else {}
+        print(f"[text] {w}: kept={len(texts_w)} (train={len(train)} heldout={len(held)}) "
+              f"chars={sum(len(t) for t in texts_w.values()):,} est_train_tokens={budget[w]:,.0f} "
+              f"excluded={dict(Counter(reasons[w].values()))} screen={dict(screened)}", flush=True)
+        if "parse_error" in reasons[w].values():
+            print(f"[text] WARNING: {w} has XML that does not parse", flush=True)
+    low = min(budget, key=budget.get)
+    print(f"[text] est. training-token budget (chars/{cpt:g}, train split) = {budget[low]:,.0f} ({low}); "
+          f"the tokenizer-exact budget comes from `pack`", flush=True)
+    if args.dry_run:
+        print("[text] --dry-run: nothing written", flush=True)
+        return
+
+    out.mkdir(parents=True, exist_ok=True)
     with open(out / "near_duplicates.csv", "w", newline="", encoding="utf-8") as f:
         wr = csv.DictWriter(f, ["kept_pmcid", "kept_window", "dropped_pmcid", "dropped_window", "jaccard"])
         wr.writeheader()
-        for kept, dropped, jac in pairs:
-            wr.writerow({"kept_pmcid": kept, "kept_window": window_of[kept], "dropped_pmcid": dropped,
-                         "dropped_window": window_of[dropped], "jaccard": jac})
-            del texts[window_of[dropped]][dropped]
-            reasons[window_of[dropped]][dropped] = "near_duplicate"
-    print(f"[text] near-duplicates (5-gram Jaccard >= 0.8): {len(pairs)} dropped", flush=True)
-
-    excluded = []
+        wr.writerows({"kept_pmcid": k, "kept_window": window_of[k], "dropped_pmcid": d,
+                      "dropped_window": window_of[d], "jaccard": j} for k, d, j in pairs)
+    excluded_rows = []
     for w in cfg["windows"]:
-        texts_w, reasons_w = texts[w], reasons[w]
-        train, held = heldout_split(list(texts_w), cfg["split"]["heldout_frac"], cfg["split"]["seed"])
-        held = set(held)
         with open(out / f"{w}.jsonl", "w", encoding="utf-8") as f:
-            for pmcid in sorted(texts_w):
-                split = "heldout" if pmcid in held else "train"
-                f.write(json.dumps({"pmcid": pmcid, "split": split, "text": texts_w[pmcid]}, ensure_ascii=False) + "\n")
-        excluded += [{"pmcid": p, "window": w, "reason": reasons_w[p]} for p in sorted(reasons_w)]
-        chars = sum(len(t) for t in texts_w.values())
-        screened = Counter(labels[r["pmcid"]] for r in rows if r["window"] == w) if labels is not None else {}
-        print(f"[text] {w}: kept={len(texts_w)} (train={len(train)} heldout={len(held)}) chars={chars:,} "
-              f"excluded={dict(Counter(reasons_w.values()))} screen={dict(screened)}", flush=True)
-        if "parse_error" in reasons_w.values():
-            print(f"[text] WARNING: {w} has XML that does not parse", flush=True)
+            for pmcid in sorted(texts[w]):
+                split = "heldout" if pmcid in splits[w] else "train"
+                f.write(json.dumps({"pmcid": pmcid, "split": split, "text": texts[w][pmcid]}, ensure_ascii=False) + "\n")
+        excluded_rows += [{"pmcid": p, "window": w, "reason": reasons[w][p]} for p in sorted(reasons[w])]
     with open(out / "excluded.csv", "w", newline="", encoding="utf-8") as f:
         wr = csv.DictWriter(f, ["pmcid", "window", "reason"])
         wr.writeheader()
-        wr.writerows(excluded)
-    print(f"[text] wrote {out}/<window>.jsonl and excluded.csv ({len(excluded)} excluded)")
+        wr.writerows(excluded_rows)
+    print(f"[text] wrote {out}/<window>.jsonl and excluded.csv ({len(excluded_rows)} excluded)")
 
 
 def load_tokenizer(hf_id: str, revision: str):
@@ -166,7 +219,10 @@ def main(argv=None) -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("text", parents=[common], help="hrt_all.csv + raw XML -> <window>.jsonl, excluded.csv")
     t.add_argument("--no-relevance-screen", action="store_true",
-                   help="skip the relevance-label gate (smoke data only; logged loudly)")
+                   help="SMOKE DATA ONLY: skip the relevance labels and hrt_excluded.csv and re-derive exclusions "
+                        "from the XML (logged loudly)")
+    t.add_argument("--dry-run", action="store_true",
+                   help="compute and check the kept set, split and est. token budget; write nothing")
     p = sub.add_parser("pack", parents=[common], help="tokenize, equal budget, pack -> .npy + budget.json")
     p.add_argument("--model", required=True, help="key in models.yaml")
     p.add_argument("--models", default="configs/models.yaml")

@@ -164,9 +164,12 @@ def test_cohen_kappa():
     assert cohen_kappa(["relevant"] * 3, ["relevant"] * 3) == 1.0
 
 
-def _preprocess_setup(harvested, labels):
+def _preprocess_setup(harvested, labels, excluded=None):
     rows = [_row(f"PMC1{i:03d}", "w1") for i in range(4)]
     write_manifest(harvested / "manifests" / "hrt_all.csv", rows)
+    if excluded is not None:
+        with open(harvested / "manifests" / "hrt_excluded.csv", "w", newline="") as f:
+            f.write("pmcid,window,reason\n" + "".join(f"{p},w1,{r}\n" for p, r in excluded.items()))
     with open(harvested / "manifests" / "relevance_labels.csv", "w", newline="") as f:
         w = csv.DictWriter(f, ["pmcid", "window", "label", "off_topic_class", "screener", "screened_on"])
         w.writeheader()
@@ -182,7 +185,8 @@ def _excluded(root):
 
 def test_preprocess_excludes_off_topic_and_keeps_borderline(harvested, repo_root):
     _preprocess_setup(harvested, {"PMC1000": ("relevant", ""), "PMC1001": ("borderline", ""),
-                                  "PMC1002": ("off_topic", "cancer_endocrine"), "PMC1003": ("relevant", "")})
+                                  "PMC1002": ("off_topic", "cancer_endocrine"), "PMC1003": ("relevant", "")},
+                      excluded={"PMC1002": "off_topic_screen"})
     preprocess_main(["text", "--config", str(repo_root / "configs" / "corpus.yaml"), "--data-root", str(harvested)])
     excluded = _excluded(harvested)
     assert excluded.get("PMC1002") == "off_topic_screen"
@@ -191,7 +195,7 @@ def test_preprocess_excludes_off_topic_and_keeps_borderline(harvested, repo_root
 
 def test_preprocess_unlabelled_article_is_a_hard_error(harvested, repo_root):
     _preprocess_setup(harvested, {"PMC1000": ("relevant", ""), "PMC1001": ("borderline", ""),
-                                  "PMC1002": ("relevant", "")})               # PMC1003 never screened
+                                  "PMC1002": ("relevant", "")}, excluded={})  # PMC1003 never screened
     with pytest.raises(SystemExit) as e:
         preprocess_main(["text", "--config", str(repo_root / "configs" / "corpus.yaml"), "--data-root", str(harvested)])
     assert "PMC1003" in str(e.value)
@@ -205,7 +209,8 @@ def test_preprocess_missing_label_file_is_a_hard_error_unless_opted_out(harveste
     with pytest.raises(SystemExit):
         preprocess_main(args)
     preprocess_main(args + ["--no-relevance-screen"])                        # smoke data only, and loud about it
-    assert "relevance screen NOT applied" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "SMOKE MODE" in out and "relevance screen and hrt_excluded.csv NOT applied" in out
 
 
 def test_screen_fields_strip_doi_urls_copyright_and_supplement_notes(make_jats):
@@ -309,3 +314,59 @@ def test_screen_summary_and_w1_rule(harvested, repo_root, capsys):
     _cli(harvested, repo_root, "screen-summary", "--window", "w1")
     out = capsys.readouterr().out
     assert "w1" in out and "kept=25" in out and "FAIL" in out
+
+
+# --- hrt_excluded.csv is the single source of truth -----------------------------------------------------
+
+ALL_RELEVANT = {f"PMC1{i:03d}": ("relevant", "") for i in range(4)}
+TEXT_ARGS = lambda repo_root, root: ["text", "--config", str(repo_root / "configs" / "corpus.yaml"),  # noqa: E731
+                                     "--data-root", str(root)]
+
+
+def _kept(root):
+    out = root / "processed" / "hrt" / "w1.jsonl"
+    return sorted(json.loads(line)["pmcid"] for line in out.read_text().splitlines())
+
+
+def test_excluded_manifest_drops_pmcid_with_clean_xml_title(harvested, repo_root):
+    """PMC10128952-style: Europe PMC title 'RETRACTED: ...' but a clean XML title; the manifest decides."""
+    _preprocess_setup(harvested, ALL_RELEVANT, excluded={"PMC1003": "notice"})
+    preprocess_main(TEXT_ARGS(repo_root, harvested))
+    assert _kept(harvested) == ["PMC1000", "PMC1001", "PMC1002"]
+    assert _excluded(harvested) == {"PMC1003": "notice"}
+
+
+def test_missing_excluded_manifest_is_an_error(harvested, repo_root):
+    _preprocess_setup(harvested, ALL_RELEVANT)                                 # no hrt_excluded.csv
+    with pytest.raises(SystemExit) as e:
+        preprocess_main(TEXT_ARGS(repo_root, harvested))
+    assert "hrt_excluded.csv" in str(e.value)
+
+
+def test_kept_set_must_equal_all_minus_excluded(harvested, repo_root, capsys):
+    labels = dict(ALL_RELEVANT, PMC1002=("off_topic", "other"))              # off_topic, but not in hrt_excluded
+    _preprocess_setup(harvested, labels, excluded={"PMC1003": "notice"})
+    with pytest.raises(SystemExit) as e:
+        preprocess_main(TEXT_ARGS(repo_root, harvested))
+    assert "kept set" in str(e.value)
+    assert "PMC1002" in capsys.readouterr().out
+    assert not (harvested / "processed" / "hrt" / "w1.jsonl").exists()        # nothing written on a mismatch
+
+
+def test_dry_run_writes_nothing_and_prints_budget(harvested, repo_root, capsys):
+    _preprocess_setup(harvested, ALL_RELEVANT, excluded={"PMC1003": "notice"})
+    preprocess_main(TEXT_ARGS(repo_root, harvested) + ["--dry-run"])
+    out = capsys.readouterr().out
+    assert "w1: kept=3" in out and "budget" in out
+    assert not (harvested / "processed").exists()
+
+
+def test_screen_summary_uses_the_exclusion_manifest(harvested, repo_root):
+    from medera.collect.screen import screen_summary
+    from medera.config import load_yaml
+
+    _screened(harvested, repo_root)
+    cfg = load_yaml(repo_root / "configs" / "corpus.yaml")
+    with open(harvested / "manifests" / "hrt_excluded.csv", "w", newline="") as f:
+        f.write("pmcid,window,reason\nPMC1000,w1,notice\n")
+    assert screen_summary(cfg, harvested, ["w1"])[0]["kept"] == 24

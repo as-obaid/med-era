@@ -266,9 +266,11 @@ def write_import(cfg: dict, root: Path, labels: list[dict], agreement: list[dict
 
 
 def screen_summary(cfg: dict, root: Path, windows: list[str]) -> list[dict]:
-    """Per window: manifest rows, labelled/unlabelled, label counts, kept (label in keep_labels AND passes the
-    Task 5 filters on the XML) and kept est. tokens (n_chars / chars_per_token), plus the pre-registered top-up
-    rule (configs/corpus.yaml: topup_rule) for its window."""
+    """Per window: manifest rows, labelled/unlabelled, label counts, kept and kept est. tokens (n_chars /
+    chars_per_token), plus the pre-registered top-up rule (configs/corpus.yaml: topup_rule) for its window.
+    Kept = not in hrt_excluded.csv or merge_dropped.csv (when present, as in preprocessing) AND label in
+    keep_labels AND passes the Task 5 filters on the XML (which also covers top-up rows not yet in
+    hrt_excluded.csv)."""
     from medera.preprocess.filters import is_usable
 
     path = root / cfg["filters"]["relevance_labels"]
@@ -277,11 +279,17 @@ def screen_summary(cfg: dict, root: Path, windows: list[str]) -> list[dict]:
         with open(path, newline="", encoding="utf-8") as f:
             labels = {r["pmcid"]: r["label"] for r in csv.DictReader(f)}
     keep, rule, corpus = set(cfg["filters"]["keep_labels"]), cfg["topup_rule"], cfg["corpus"]
+    # Same source as preprocessing: rows in hrt_excluded.csv (and duplicates merge dropped) are never kept.
+    dropped = set()
+    for name in (cfg["filters"]["excluded_manifest"], "manifests/merge_dropped.csv"):
+        if (root / name).exists():
+            with open(root / name, newline="", encoding="utf-8") as f:
+                dropped |= {r["pmcid"] for r in csv.DictReader(f)}
     out = []
     for w in windows:
         rows = read_manifest(root / "manifests" / f"{corpus}_{w}.csv")
         xml_dir = root / "raw" / corpus / w
-        kept = [r for r in rows if labels.get(r["pmcid"]) in keep
+        kept = [r for r in rows if r["pmcid"] not in dropped and labels.get(r["pmcid"]) in keep
                 and is_usable((xml_dir / f"{r['pmcid']}.xml").read_bytes(), cfg["filters"])]
         tokens = sum(int(r["n_chars"] or 0) for r in kept) / cfg["chars_per_token"]
         counts = Counter(labels[r["pmcid"]] for r in rows if r["pmcid"] in labels)

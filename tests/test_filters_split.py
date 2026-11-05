@@ -123,7 +123,9 @@ def test_text_cli_writes_jsonl_and_excluded(tmp_path, repo_root, make_jats):
     with open(tmp_path / "manifests" / "relevance_labels.csv", "w", newline="") as f:  # every article screened
         f.write("pmcid,window,label,off_topic_class,screener,screened_on\n")
         f.writelines(f"{p},{windows[p]},relevant,,s,2026-11-04\n" for p in docs)
-    main(["text", "--config", str(repo_root / "configs" / "corpus.yaml"), "--data-root", str(tmp_path)])
+    # Smoke path: exclusions re-derived from the XML (the real corpus uses hrt_excluded.csv instead).
+    main(["text", "--config", str(repo_root / "configs" / "corpus.yaml"), "--data-root", str(tmp_path),
+          "--no-relevance-screen"])
     out = tmp_path / "processed" / "hrt"
     w1 = [json.loads(line) for line in (out / "w1.jsonl").read_text().splitlines()]
     assert [d["pmcid"] for d in w1] == ["PMC1", "PMC2"]
