@@ -65,11 +65,14 @@ def test_export_is_blinded(harvested, repo_root):
     salt = key[0]["salt"]
     assert len(salt) == 32 and {r["salt"] for r in key} == {salt}
     for path in _batches(harvested):
-        raw = path.read_text()
-        for leak in ("PMC1", "10.9999", "Maturitas Secret Journal", "2013", "cc by", "Elsevier", "111"):
-            assert leak not in raw, (path.name, leak)
         for rec in _lines(path):
             assert set(rec) == {"item_id", "title", "abstract", "keywords"}
+            # item_id is 12 random-salted hex chars, so it can contain "111" by chance; check it by shape and
+            # look for leaks only in the fields a screener reads.
+            assert len(rec["item_id"]) == 12 and set(rec["item_id"]) <= set("0123456789abcdef")
+            visible = json.dumps({k: v for k, v in rec.items() if k != "item_id"})
+            for leak in ("PMC1", "10.9999", "Maturitas Secret Journal", "2013", "cc by", "Elsevier", "111"):
+                assert leak not in visible, (path.name, leak)
             assert rec["abstract"] == "Postmenopausal women used estradiol for hot flushes."
             assert rec["keywords"] == ["menopause", "estrogen"]
     for r in key:
