@@ -19,7 +19,7 @@ whether its clinical answers **shift to match the period it read**. The case stu
 replacement therapy (HRT) for menopause, where guidance changed several times between 2011 and 2026.
 
 <p align="center">
-  <img src="docs/figures/medera-banner.svg" width="100%" alt="MedEra: one model is adapted on Europe PMC open-access HRT literature from one era at a time (2011–2015, 2016–2020, 2021–2026), asked the same HRT questions, and its answers compared across eras.">
+  <img src="docs/figures/medera-hero.svg" width="100%" alt="MedEra: one model is adapted on Europe PMC open-access HRT literature from one era at a time (2011–2015, 2016–2020, 2021–2026), asked the same HRT questions, and its answers compared across eras.">
 </p>
 
 > [!IMPORTANT]
