@@ -202,3 +202,20 @@ def test_preprocess_missing_label_file_is_a_hard_error_unless_opted_out(harveste
         preprocess_main(args)
     preprocess_main(args + ["--no-relevance-screen"])                        # smoke data only, and loud about it
     assert "relevance screen NOT applied" in capsys.readouterr().out
+
+
+def test_screen_fields_strip_doi_urls_copyright_and_supplement_notes(make_jats):
+    """Real leaks found in the first export: the supplementary-material note carries the article's DOI, and
+    abstracts end with '© 2018 The Authors. Journal of ... published by ...'."""
+    from medera.preprocess.jats import screen_fields
+
+    abstract = ("<p>Estradiol lowered fracture risk in postmenopausal women. © 2018 The Authors. Journal of Bone "
+                "and Mineral Research published by Wiley.</p>"
+                "<sec><title>Electronic supplementary material</title><p>The online version of this article "
+                "(doi:10.1186/s13058-016-0723-3) contains supplementary material.</p></sec>"
+                "<p>Data are at https://example.org/x and 10.1007/s00404-020-05682-4.</p>")
+    f = screen_fields(make_jats(abstract=abstract))
+    a = f["abstract"]
+    assert a.startswith("Estradiol lowered fracture risk in postmenopausal women.")
+    for leak in ("©", "2018", "Mineral Research", "supplementary", "10.1186", "10.1007", "https://", "example.org"):
+        assert leak not in a, leak

@@ -41,8 +41,13 @@ publication date or year, the journal, the PMCID, PMID or DOI, or the license.
 
 - **Why.** The publication window is the study's independent variable, so the screen must not be able to
   depend on it.
-- **Copyright lines.** Abstract paragraphs that are copyright lines (for example "© 2013 Elsevier …") are
-  removed, because they reveal the year and the publisher.
+- **Leaks removed from the abstract.** Each of these would reveal the year, the publisher or the article
+  itself:
+  - copyright lines, and trailing notices such as "© 2018 The Authors. *Journal* published by …";
+  - supplementary-material notes, which carry the article's own DOI;
+  - every DOI and URL.
+- **Leak audit.** The first export (w1 and w2, 2,037 items) was checked against the manifests and contains no
+  PMCID, DOI, publication date, copyright notice or URL.
 - **Item IDs.** Each article gets an item ID: the first 12 hex characters of `sha256(salt + PMCID)`. The
   salt and the item-to-PMCID key are stored in `data/raw/screen/key.csv`, which is never committed and
   never shown to a screener.

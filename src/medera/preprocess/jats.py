@@ -129,6 +129,10 @@ CC_URL = re.compile(r"creativecommons\.org/(?:licenses/((?:by|nc|nd|sa)(?:-(?:by
 CC_ABBR = re.compile(r"\bCC[- ]?(BY(?:[- ](?:NC|ND|SA))*)\b|\b(CC0)\b", re.IGNORECASE)
 CC_LONG = re.compile(r"creative commons attribution(?:[- ,]+(?:non-?commercial|no-?deriv\w*|share-?alike))*", re.IGNORECASE)
 COPYRIGHT_BLOCK = re.compile(r"^\s*(?:copyright\b|©|\(c\)\s*\d{4})", re.IGNORECASE)
+COPYRIGHT_TAIL = re.compile(r"\s*(?:copyright\s*)?(?:©|\(c\)\s*(?:19|20)\d{2}).*$", re.IGNORECASE | re.DOTALL)
+SUPPLEMENT_NOTE = re.compile(r"^\s*(?:electronic )?supplementary (?:material|information)\b|online version of this article",
+                             re.IGNORECASE)
+DOI_OR_URL = re.compile(r"\(?\b(?:doi:\s*)?10\.\d{4,9}/[^\s)]+\)?|https?://\S+|\bwww\.\S+", re.IGNORECASE)
 
 
 def _cc(s: str) -> str | None:
@@ -179,12 +183,20 @@ def article_license(xml: bytes) -> str:
 
 def screen_fields(xml: bytes) -> dict:
     """Title, abstract and keywords for the blinded relevance screen: no journal, dates, IDs or license.
-    Abstract paragraphs that are copyright lines ("© 2013 Elsevier ...") are dropped, since they leak the year."""
+    Leaks are removed: copyright lines and trailing "© 2018 The Authors. <Journal> ..." notices, supplementary-
+    material notes (they carry the article's own DOI), and every DOI or URL."""
     root = _parse(xml)
     _drop(root, _is_dropped)
     blocks = []
     for container in root.findall("front/article-meta/abstract"):
         _blocks(container, blocks)
-    abstract = "\n\n".join(b for b in map(_clean, blocks) if b and not COPYRIGHT_BLOCK.match(b))
+    kept = []
+    for b in map(_clean, blocks):
+        if not b or COPYRIGHT_BLOCK.match(b) or SUPPLEMENT_NOTE.search(b):
+            continue
+        b = _clean(DOI_OR_URL.sub("", COPYRIGHT_TAIL.sub("", b)))
+        if b:
+            kept.append(b)
+    abstract = "\n\n".join(kept)
     keywords = [k for k in (_clean(_text(kw)) for kw in root.findall("front/article-meta/kwd-group/kwd")) if k]
     return {"title": _title(root), "abstract": abstract, "keywords": keywords}
