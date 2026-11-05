@@ -9,7 +9,9 @@
 #   MEDERA_GPU=a100 bash hpc/submit_smoke.sh     # A100 80 GB fallback (off by default)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=hpc/env.sh disable=SC1091
 source hpc/env.sh
+# shellcheck source=hpc/_preflight.sh disable=SC1091
 source hpc/_preflight.sh
 ROOT=${SMOKE_ROOT:-data/smoke}
 preflight_env

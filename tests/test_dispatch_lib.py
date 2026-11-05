@@ -58,3 +58,26 @@ def test_state_file_roundtrip(tmp_path):
                f'state_set qwen:w1 2 333 submitted; state_get qwen:w1; state_get gemma_ex:w1; state_get gemma_al:w1')
     assert out.splitlines() == ["2 333 submitted", "2 222 submitted", "0 - new"]
     assert len(f.read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize("queue,ours,room", [
+    ("", 0, 4),                                                   # empty queue: our cap
+    ("sharing,gpu-short,gpu-interactive\n" * 4, 4, 0),             # 4 pending adapter jobs: full
+    ("gpu-short\ngpu-short\n", 2, 2),                              # 2 running in gpu-short: cap 4 - 2
+    ("sharing\nsharing\nsharing\n", 0, 1),                         # other jobs in sharing: its MaxSubmit 4 - 3
+    ("gpu-interactive\n" * 4, 0, 0),                               # gpu-interactive full blocks every new job
+    ("gpu-short\n" * 8, 0, 0),
+])
+def test_submit_room_takes_the_tightest_limit(queue, ours, room):
+    assert bash(f'submit_room 4 {ours} sharing,gpu-short,gpu-interactive', queue) == str(room)
+
+
+def test_attempt_of_comment_and_json_field(tmp_path):
+    assert bash('attempt_of_comment "medera_attempt=2"') == "2"
+    assert bash('attempt_of_comment "(null)"') == ""
+    f = tmp_path / "progress.json"
+    f.write_text('{"step": 25, "total": 189, "attempt": 2, "job_id": "11700001", "partition": "sharing", '
+                 '"node": "d4077", "gpu": "NVIDIA H200", "updated": "2026-11-05 01:02:03"}')
+    got = [bash(f'json_field "{f}" {k}') for k in ("step", "total", "job_id", "gpu", "node", "partition", "updated")]
+    assert got == ["25", "189", "11700001", "NVIDIA H200", "d4077", "sharing", "2026-11-05 01:02:03"]
+    assert bash(f'json_field "{tmp_path / "missing.json"}" step') == ""

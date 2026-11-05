@@ -15,6 +15,7 @@
 # the fla fast-path flag and the token count that fits in the wall-time guard.
 # Result: runs/results/smoke/<arm>.json; the log line starts with "[smoke] PASS" or "[smoke] FAIL".
 set -euo pipefail
+# shellcheck source=hpc/env.sh disable=SC1091
 source "/scratch/$USER/med-era/hpc/env.sh"
 cd "$MEDERA_ROOT"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 WANDB_MODE=offline   # compute nodes have no internet

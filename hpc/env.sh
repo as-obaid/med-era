@@ -32,10 +32,13 @@ mkdir -p "$_medera_cache" "$TMPDIR" "$MEDERA_ROOT/runs/logs" "$WANDB_CACHE_DIR" 
 
 # W&B credentials (gitignored .env, chmod 600): loaded without ever echoing values.
 case $- in *x*) _medera_xtrace=1; set +x ;; esac
+# shellcheck source=/dev/null  # the secret file: never followed or linted
 if [ -f "$MEDERA_ROOT/.env" ]; then set -a; . "$MEDERA_ROOT/.env"; set +a; fi
 if [ -n "${WANDB_API_KEY:-}" ]; then echo "W&B: key loaded" >&2; else echo "W&B: no key, logging disabled" >&2; fi
 if [ -n "${_medera_xtrace:-}" ]; then unset _medera_xtrace; set -x; fi
 # Optional user-specific overrides (gitignored).
+# shellcheck source=/dev/null
 if [ -f "$MEDERA_ROOT/hpc/env.local.sh" ]; then source "$MEDERA_ROOT/hpc/env.local.sh"; fi
+# shellcheck source=/dev/null
 if [ -x "$MEDERA_ENV/bin/python" ]; then source "$MEDERA_ENV/bin/activate"; fi
 unset _medera_cache

@@ -17,6 +17,7 @@
 #   sbatch hpc/build_data.slurm data                 # real corpus, after the harvest
 set -euo pipefail
 ROOT=${1:-data}
+# shellcheck source=hpc/env.sh disable=SC1091
 source "/scratch/$USER/med-era/hpc/env.sh"
 cd "$MEDERA_ROOT"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1

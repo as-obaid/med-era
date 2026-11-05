@@ -168,9 +168,9 @@ training tokens.
   with no lowercasing, stemming or stop-word removal, because the model's subword tokenizer needs
   them.
 - **Held-out split.** About 5% of each window is held out (seed 42) for the perplexity checks.
-- **Equal-token budget.** Every adapter makes one pass over the token count of the smallest window.
-  Larger windows are randomly downsampled to match, so era is not confounded with data volume or
-  epochs.
+- **Equal-token budget.** Every adapter trains on the token count of the smallest window, for the same
+  2 epochs. Larger windows are randomly downsampled to match, so era is not confounded with data
+  volume or epochs.
 
 **Adaptation.** Each arm adapts its base model to each window separately, and two checks run before
 anything is probed.
@@ -193,9 +193,9 @@ anything is probed.
 | Optimizer | AdamW, learning rate 2e-4 |
 | Precision | bf16 |
 | Block length | 2048 tokens |
-| Data per adapter | One pass at the equal-token budget |
+| Data per adapter | 2 epochs over the equal-token budget (189–196 optimizer steps of 16,384 tokens) |
 | Seed | 42 |
-| Compute | One H200 GPU per job on Northeastern's Explorer cluster |
+| Compute | One 80 GB-class GPU (H100 or H200) per 1-hour job on Northeastern's Explorer cluster, resumed from checkpoints |
 
 </details>
 

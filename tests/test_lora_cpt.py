@@ -100,3 +100,66 @@ def test_job_deadline_uses_slurm_end_minus_margin():
     assert job_deadline(1000.0, cfg, env={}) == 1000.0 + 7.25 * 3600
     assert job_deadline(1000.0, cfg, env={"MEDERA_JOB_END_EPOCH": "5000"}) == 4700
     assert job_deadline(1000.0, cfg, env={"SLURM_JOB_END_TIME": "4000"}) == 3700
+
+
+def test_schedule_at_two_epochs_matches_the_owner_decision():
+    from medera.train.lora_cpt import schedule
+
+    qwen, gemma = arm_config(TRAIN, "qwen"), arm_config(TRAIN, "gemma_ex")
+    q, g = schedule(787, 2048, qwen), schedule(756, 2048, gemma)     # train blocks per window (budget.json)
+    assert (q["epochs"], q["total_steps"], q["warmup_steps"]) == (2, 196, 6)
+    assert (g["epochs"], g["total_steps"], g["warmup_steps"]) == (2, 189, 6)
+    assert q["tokens_per_step"] == g["tokens_per_step"] == 16_384
+    assert q["train_tokens"] == 196 * 16_384 and g["train_tokens"] == 189 * 16_384
+
+
+def test_gpu_size_gate():
+    from medera.train.lora_cpt import gpu_big_enough
+
+    mib = 2**20
+    assert gpu_big_enough(81_559 * mib) and gpu_big_enough(81_920 * mib) and gpu_big_enough(143_771 * mib)
+    assert gpu_big_enough(int(79.11 * 2**30))                    # what torch reports for an H100 80 GB
+    assert not gpu_big_enough(46_068 * mib) and not gpu_big_enough(40_960 * mib) and not gpu_big_enough(32_768 * mib)
+
+
+def test_wandb_run_id_is_stable_across_attempts(tmp_path):
+    from medera.train.lora_cpt import wandb_run_id
+
+    first = wandb_run_id(tmp_path / "ck", "gemma_ex-w1-bf16-s42")
+    assert first.startswith("gemma_ex-w1-bf16-s42-") and not set("/\\#?%:") & set(first)
+    assert wandb_run_id(tmp_path / "ck", "gemma_ex-w1-bf16-s42") == first
+    assert wandb_run_id(tmp_path / "other", "gemma_ex-w1-bf16-s42") != first
+
+
+def test_tracker_resumes_one_run_and_records_plan_and_provenance(monkeypatch):
+    import sys
+    import types
+
+    from medera.train.lora_cpt import schedule, start_tracker
+
+    calls = []
+    fake = types.SimpleNamespace(init=lambda **kw: calls.append(kw) or "run")
+    monkeypatch.setitem(sys.modules, "wandb", fake)
+    monkeypatch.setenv("WANDB_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("WANDB_MODE", "offline")
+    cfg = arm_config(TRAIN, "qwen")
+    prov = {"attempt": 2, "git_sha": "abc1234", "gpu": "NVIDIA H200", "job_id": "9", "partition": "gpu-short",
+            "node": "d4052"}
+    assert start_tracker(cfg, {"hf_id": "x"}, "w2", False, prov, schedule(787, 2048, cfg), "qwen-w2-bf16-s42-ab") == "run"
+    kw = calls[0]
+    assert kw["id"] == "qwen-w2-bf16-s42-ab" and kw["resume"] == "allow" and kw["name"] == "qwen-w2-bf16-s42"
+    assert "attempt-2" in kw["tags"]
+    c = kw["config"]
+    assert (c["epochs"], c["total_steps"], c["warmup_steps"], c["save_every_steps"]) == (2, 196, 6, 25)
+    assert (c["git_sha"], c["gpu"], c["partition"], c["node"], c["attempt"]) == ("abc1234", "NVIDIA H200", "gpu-short",
+                                                                                 "d4052", 2)
+    assert c["attempt_2"] == prov
+
+    def refuse_resume(**kw):
+        if "id" in kw:
+            raise ValueError("no resume")
+        calls.append(kw)
+        return "new-run"
+    fake.init = refuse_resume
+    assert start_tracker(cfg, {}, "w2", False, prov, None, "qwen-w2-bf16-s42-ab") == "new-run"
+    assert "id" not in calls[-1] and "attempt-2" in calls[-1]["tags"]

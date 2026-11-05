@@ -10,6 +10,7 @@
 #    CPU job (hpc/build_data.slurm). Re-run only the pin check with: bash hpc/setup_env.sh --verify
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=hpc/env.sh disable=SC1091
 source hpc/env.sh
 PY="$MEDERA_ENV/bin/python"
 

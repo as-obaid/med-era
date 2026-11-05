@@ -5,13 +5,19 @@
 
 Training reads packed 2048-token blocks (`preprocess pack`), trains from the pinned base checkpoint
 for `epochs` passes, then runs the adapter audit. Exit codes: 0 ok (adapter + DONE marker written), 1 audit or
-smoke failure, 3 stopped before the deadline (Slurm job end minus a margin, or the wall-time guard); resubmit
-the same arm/window to resume from the last checkpoint.
+smoke failure, 3 stopped before the deadline (Slurm job end minus a margin, the wall-time guard, or SIGTERM),
+4 the GPU has under 79 GB. Resubmit the same arm/window to resume from the last checkpoint: adapter weights,
+AdamW moments, LR schedule, RNG state and data position all carry over, so the result is bit-identical to an
+uninterrupted run.
 """
 import argparse
 import json
 import math
 import os
+import random
+import secrets
+import signal
+import socket
 import statistics
 import subprocess
 import sys
@@ -25,7 +31,8 @@ from medera.train.audit_adapter import audit, check
 from medera.train.targets import expert_targets, linear_targets
 
 PRECISIONS = ("bf16", "qlora4")
-EXIT_OK, EXIT_FAIL, EXIT_WALL = 0, 1, 3
+EXIT_OK, EXIT_FAIL, EXIT_WALL, EXIT_SMALL_GPU = 0, 1, 3, 4
+MIN_GPU_BYTES = 79 * 10**9  # bf16 LoRA on the 26-27B bases needs an 80 GB card (smoke peak 67.6 GB)
 MAX_SMOKE_LOSS = 8.0  # a pretrained LM on English text starts far below this; random weights give ~ln(vocab) > 12
 
 
@@ -98,6 +105,27 @@ def optimizer_steps(n_blocks: int, micro_batch: int, grad_accum: int, epochs: in
     return epochs * (n_blocks // micro_batch) // grad_accum
 
 
+def schedule(n_blocks: int, block_len: int, cfg: dict) -> dict:
+    """The resolved step plan (logged, written to the W&B config and the run summary). Warmup and the cosine
+    decay scale with the steps of all epochs; every epoch repeats the same equal-token blocks."""
+    mb, accum, epochs = cfg["micro_batch"], cfg["grad_accum"], cfg.get("epochs", 1)
+    total = optimizer_steps(n_blocks, mb, accum, epochs)
+    tokens_per_step = mb * accum * block_len
+    return {"n_blocks": n_blocks, "epochs": epochs, "total_steps": total,
+            "warmup_steps": max(1, round(cfg["warmup_ratio"] * total)),
+            "tokens_per_step": tokens_per_step, "train_tokens": total * tokens_per_step}
+
+
+def _resume_key(plan: dict, cfg: dict) -> dict:
+    """What must match between a checkpoint and the attempt resuming it, or the continuation is not exact."""
+    return {**{k: plan[k] for k in ("n_blocks", "epochs", "total_steps", "warmup_steps", "tokens_per_step")},
+            **{k: cfg[k] for k in ("seed", "lr", "micro_batch", "grad_accum", "weight_decay", "max_grad_norm")}}
+
+
+def gpu_big_enough(total_bytes: int) -> bool:
+    return total_bytes >= MIN_GPU_BYTES
+
+
 def micro_batch_rows(m: int, n_blocks: int, micro_batch: int, seed: int, cache: dict) -> np.ndarray:
     """Block rows of global micro-batch m. Epoch e uses its own seeded permutation (seed + e), so epoch 0
     is the original single-pass order and a resumed run sees exactly the same sequence."""
@@ -124,26 +152,46 @@ def _write_progress(path: Path | None, state: dict, total: int, attempt: dict | 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps({"step": state["step"], "total": total, "attempt": a.get("attempt"),
-                               "job_id": a.get("job_id"), "node": a.get("node"), "gpu": a.get("gpu"),
+                               "job_id": a.get("job_id"), "partition": a.get("partition"), "node": a.get("node"),
+                               "gpu": a.get("gpu"),
                                "updated": time.strftime("%Y-%m-%d %H:%M:%S")}))
     os.replace(tmp, path)
 
 
-def _save_ckpt(path: Path, model, opt, sched, state: dict) -> None:
+def _rng_state() -> dict:
+    import torch
+
+    return {"python": random.getstate(), "numpy": np.random.get_state(), "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None}
+
+
+def _set_rng_state(rng: dict) -> None:
+    import torch
+
+    random.setstate(rng["python"])
+    np.random.set_state(rng["numpy"])
+    torch.set_rng_state(rng["torch"].cpu())
+    if rng.get("cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([s.cpu() for s in rng["cuda"]])
+
+
+def _save_ckpt(path: Path, model, opt, sched, state: dict, key: dict) -> None:
     import torch
     from peft import get_peft_model_state_dict
 
     path.mkdir(parents=True, exist_ok=True)
     tmp = path / "state.pt.tmp"
     torch.save({"adapter": get_peft_model_state_dict(model), "opt": opt.state_dict(),
-                "sched": sched.state_dict(), "state": state}, tmp)
+                "sched": sched.state_dict(), "state": state, "rng": _rng_state(), "key": key}, tmp)
     os.replace(tmp, path / "state.pt")
 
 
 def train(model, blocks: np.ndarray, cfg: dict, max_steps: int | None = None, ckpt_dir: Path | None = None,
-          deadline: float | None = None, log=print, tracker=None, attempt: dict | None = None) -> dict:
+          deadline: float | None = None, log=print, tracker=None, attempt: dict | None = None,
+          stop_requested=None) -> dict:
     """cfg["epochs"] passes over `blocks` [n, block_len]. Records the max grad norm per trainable tensor and,
-    per attempt (job), where it ran and which steps it covered; resumes from ckpt_dir/state.pt."""
+    per attempt (job), where it ran and which steps it covered; resumes exactly from ckpt_dir/state.pt.
+    Stops with a checkpoint when one more step would pass `deadline` or when stop_requested() (SIGTERM) is true."""
     import torch
     from peft import set_peft_model_state_dict
 
@@ -152,16 +200,21 @@ def train(model, blocks: np.ndarray, cfg: dict, max_steps: int | None = None, ck
     trainable = [p for _, p in named]
     opt = torch.optim.AdamW(trainable, lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     mb, accum = cfg["micro_batch"], cfg["grad_accum"]
-    total = optimizer_steps(len(blocks), mb, accum, cfg.get("epochs", 1))
-    warmup = max(1, round(cfg["warmup_ratio"] * total))  # warmup and cosine scale with all epochs' steps
+    plan = schedule(len(blocks), blocks.shape[1], cfg)
+    total, warmup = plan["total_steps"], plan["warmup_steps"]
+    key = _resume_key(plan, cfg)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: lr_at(s, total, warmup))
     perms: dict = {}
     state = {"step": 0, "losses": [], "step_times": [], "grad_norms": {}, "attempts": []}
     if ckpt_dir is not None and (ckpt_dir / "state.pt").exists():
-        ck = torch.load(ckpt_dir / "state.pt", map_location=device, weights_only=False)
+        ck = torch.load(ckpt_dir / "state.pt", map_location="cpu", weights_only=False)
+        if ck.get("key") != key:
+            raise RuntimeError(f"checkpoint {ckpt_dir / 'state.pt'} was written with {ck.get('key')}, this attempt "
+                               f"has {key}: resuming would not continue exactly. Move the checkpoint aside to restart.")
         set_peft_model_state_dict(model, ck["adapter"])
-        opt.load_state_dict(ck["opt"])
+        opt.load_state_dict(ck["opt"])  # moves the moments to each parameter's device
         sched.load_state_dict(ck["sched"])
+        _set_rng_state(ck["rng"])
         state = ck["state"]
         state.setdefault("attempts", [])
         log(f"[train] resumed at step {state['step']}/{total}")
@@ -169,9 +222,9 @@ def train(model, blocks: np.ndarray, cfg: dict, max_steps: int | None = None, ck
     if attempt is not None:
         state["attempts"].append({**attempt, "start_step": state["step"], "started": time.strftime("%Y-%m-%d %H:%M:%S")})
     limit = total if max_steps is None else min(total, max_steps)
-    tokens_per_step = mb * accum * blocks.shape[1]
-    log(f"[train] blocks={len(blocks)} epochs={cfg.get('epochs', 1)} steps={total} (running to {limit}) "
-        f"warmup={warmup} tokens/step={tokens_per_step:,}")
+    tokens_per_step = plan["tokens_per_step"]
+    log(f"[train] blocks={len(blocks)} epochs={plan['epochs']} steps={total} (running to {limit}) "
+        f"warmup={warmup} tokens/step={tokens_per_step:,} tokens={plan['train_tokens']:,}")
 
     model.train()
     stopped = "done" if limit == total else "max_steps"
@@ -206,17 +259,22 @@ def train(model, blocks: np.ndarray, cfg: dict, max_steps: int | None = None, ck
                 tracker.log({"loss": state["losses"][-1], "lr": sched.get_last_lr()[0], "s_per_step": s_per_step,
                              "tokens_per_s": tokens_per_step / s_per_step, "peak_mem_gb": peak}, step=step)
             _write_progress(progress, state, total, attempt)
-        # Stop before the deadline if one more step would not finish in time.
-        out_of_time = deadline is not None and step < limit and time.time() + state["step_times"][-1] > deadline
+        # Stop before the deadline if one more step would not finish in time, or on SIGTERM.
+        reason = None
+        if step < limit and deadline is not None and time.time() + state["step_times"][-1] > deadline:
+            reason = "deadline"
+        elif step < limit and stop_requested is not None and stop_requested():
+            reason = "SIGTERM"
+        out_of_time = reason is not None
         if out_of_time:
             stopped = "wall"
         if state["attempts"]:
             state["attempts"][-1].update(end_step=step, stopped=stopped if step >= limit or out_of_time else "running")
         if ckpt_dir is not None and step < limit and (out_of_time or step % cfg["save_every_steps"] == 0):
-            _save_ckpt(ckpt_dir, model, opt, sched, state)
+            _save_ckpt(ckpt_dir, model, opt, sched, state, key)
             _write_progress(progress, state, total, attempt)
         if out_of_time:
-            log(f"[train] wall-time guard at step {step}/{limit}: checkpoint saved; the next attempt resumes here")
+            log(f"[train] stopping at step {step}/{limit} ({reason}): checkpoint saved; the next attempt resumes here")
             break
 
     if state["attempts"]:
@@ -224,7 +282,8 @@ def train(model, blocks: np.ndarray, cfg: dict, max_steps: int | None = None, ck
                                      ended=time.strftime("%Y-%m-%d %H:%M:%S"))
     _write_progress(progress, state, total, attempt)
     peak = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
-    return {**state, "total_steps": total, "tokens_per_step": tokens_per_step, "peak_mem_gb": peak, "stopped": stopped}
+    return {**state, "total_steps": total, "tokens_per_step": tokens_per_step, "peak_mem_gb": peak, "stopped": stopped,
+            "plan": plan}
 
 
 def _git_sha() -> str:
@@ -234,21 +293,47 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def start_tracker(cfg: dict, model_cfg: dict, window: str, smoke: bool, provenance: dict | None = None):
-    """W&B run when WANDB_API_KEY is set (jobs run with WANDB_MODE=offline), else None. Logs the
-    resolved config and git SHA only: never article text or the environment."""
+def run_name(cfg: dict, window: str) -> str:
+    return f"{cfg['arm']}-{window}-{cfg['precision']}-s{cfg['seed']}"
+
+
+def wandb_run_id(ckpt_dir: Path, name: str) -> str:
+    """One W&B run per adapter across its attempts. The first attempt creates the id and keeps it next to the
+    checkpoint; later attempts reuse it, so `wandb sync` uploads every attempt's offline files into the same run
+    (in start order). Moving the checkpoint dir aside to retrain from scratch also starts a new W&B run."""
+    f = ckpt_dir / "wandb_run_id"
+    if f.exists():
+        return f.read_text().strip()
+    run_id = f"{name}-{secrets.token_hex(4)}"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    f.write_text(run_id + "\n")
+    return run_id
+
+
+def start_tracker(cfg: dict, model_cfg: dict, window: str, smoke: bool, provenance: dict | None = None,
+                  plan: dict | None = None, run_id: str | None = None):
+    """W&B run when WANDB_API_KEY is set (jobs run with WANDB_MODE=offline), else None. Logs the resolved
+    config (with the step plan), the attempt's provenance and git SHA only: never article text or the
+    environment. With run_id, resumes that offline run; if W&B refuses, starts a new run tagged attempt-N."""
     if not os.environ.get("WANDB_API_KEY") or os.environ.get("WANDB_MODE") == "disabled":
         return None
+    prov = provenance or {}
+    kw = dict(project=os.environ.get("WANDB_PROJECT", "MedEra"), entity=os.environ.get("WANDB_ENTITY"),
+              name=run_name(cfg, window) + ("-smoke" if smoke else ""),
+              group=cfg["arm"], job_type="smoke" if smoke else "train",
+              tags=[cfg["arm"], window, cfg["model"], cfg["precision"]] + (["smoke"] if smoke else [])
+              + ([f"attempt-{prov['attempt']}"] if prov else []),
+              config={**cfg, **(plan or {}), "window": window, "model_cfg": model_cfg, "smoke": smoke, **prov,
+                      **({f"attempt_{prov['attempt']}": prov} if prov else {})})
     try:
         import wandb
 
-        return wandb.init(
-            project=os.environ.get("WANDB_PROJECT", "MedEra"), entity=os.environ.get("WANDB_ENTITY"),
-            name=f"{cfg['arm']}-{window}-{cfg['precision']}-s{cfg['seed']}" + ("-smoke" if smoke else ""),
-            group=cfg["arm"], job_type="smoke" if smoke else "train",
-            tags=[cfg["arm"], window, cfg["model"], cfg["precision"]] + (["smoke"] if smoke else [])
-            + ([f"attempt-{provenance['attempt']}"] if provenance else []),
-            config={**cfg, "window": window, "model_cfg": model_cfg, "smoke": smoke, **(provenance or {})})
+        if run_id:
+            try:
+                return wandb.init(id=run_id, resume="allow", **kw)
+            except Exception as e:
+                print(f"[train] W&B resume of {run_id} failed ({type(e).__name__}: {e}); new run", flush=True)
+        return wandb.init(**kw)
     except Exception as e:  # tracking must never take a training run down
         print(f"[train] W&B disabled: {type(e).__name__}: {e}", flush=True)
         return None
@@ -294,19 +379,36 @@ def main(argv=None) -> int:
     if blocks.shape[1] != cfg["block_len"]:
         raise ValueError(f"blocks are {blocks.shape[1]} tokens, config says {cfg['block_len']}")
     torch.manual_seed(cfg["seed"])
+    plan = schedule(len(blocks), blocks.shape[1], cfg)
     # Provenance is captured at job START: a `git pull` during a long run must not change what is recorded.
     ckpt_dir = runs / "checkpoints" / name
     prev = json.loads((ckpt_dir / "progress.json").read_text()) if (ckpt_dir / "progress.json").exists() else {}
     provenance = {"attempt": int(os.environ.get("MEDERA_ATTEMPT") or (prev.get("attempt") or 0) + 1),
                   "git_sha": _git_sha(), "gpu": torch.cuda.get_device_name(0),
                   "job_id": os.environ.get("SLURM_JOB_ID"), "partition": os.environ.get("SLURM_JOB_PARTITION"),
-                  "node": os.environ.get("SLURMD_NODENAME")}
+                  "node": os.environ.get("SLURMD_NODENAME") or socket.gethostname()}
     print(f"[train] arm={args.arm} window={args.window} model={model_cfg['hf_id']}@{model_cfg['revision'][:8]} "
-          f"precision={cfg['precision']} experts={cfg['experts']} epochs={cfg.get('epochs', 1)} "
+          f"precision={cfg['precision']} experts={cfg['experts']} epochs={plan['epochs']} "
+          f"steps={plan['total_steps']} warmup={plan['warmup_steps']} "
           f"attempt={provenance['attempt']} gpu={provenance['gpu']} node={provenance['node']} "
           f"partition={provenance['partition']} commit={provenance['git_sha'][:7]}", flush=True)
+    gpu_bytes = torch.cuda.get_device_properties(0).total_memory
+    if cfg["precision"] == "bf16" and not gpu_big_enough(gpu_bytes):  # the qlora4 switch arms fit 40 GB cards
+        print(f"[train] ERROR: {provenance['gpu']} has {gpu_bytes / 1e9:.1f} GB (< {MIN_GPU_BYTES / 1e9:.0f} GB); "
+              f"bf16 LoRA needs an 80 GB card. Exit {EXIT_SMALL_GPU}.", flush=True)
+        return EXIT_SMALL_GPU
+    # Slurm sends SIGTERM at the time limit (or on scancel) and SIGKILL KillWait (600 s on Explorer) later. While
+    # training: finish the step, checkpoint, exit 3. Before training: exit 3 now. The deadline normally comes first.
+    term = {"signal": None, "training": False}
 
-    tracker = start_tracker(cfg, model_cfg, args.window, args.smoke, None if args.smoke else provenance)
+    def _on_term(signum, frame):
+        term["signal"] = signum
+        if not term["training"]:
+            raise SystemExit(EXIT_WALL)
+    signal.signal(signal.SIGTERM, _on_term)
+
+    tracker = start_tracker(cfg, model_cfg, args.window, args.smoke, None if args.smoke else provenance, plan,
+                            None if args.smoke else wandb_run_id(ckpt_dir, run_name(cfg, args.window)))
     model = load_model(model_cfg, cfg["precision"])
     load_s = time.time() - t_start
     model = apply_lora(model, cfg, model_cfg)
@@ -319,14 +421,15 @@ def main(argv=None) -> int:
     else:
         deadline = job_deadline(t_start, cfg)
         print(f"[train] checkpoint/stop deadline in {(deadline - time.time()) / 60:.0f} min", flush=True)
+        term["training"] = True
         res = train(model, blocks, cfg, max_steps=args.max_steps, ckpt_dir=ckpt_dir, deadline=deadline, log=log,
-                    tracker=tracker, attempt=provenance)
+                    tracker=tracker, attempt=provenance, stop_requested=lambda: term["signal"] is not None)
 
     report = audit(model, res["grad_norms"], args.arm, cfg["experts"])
     report.update(window=args.window, precision=cfg["precision"], model=cfg["model"])
     failures = check(report)
     summary = {"arm": args.arm, "window": args.window, "precision": cfg["precision"], "model": model_cfg,
-               "config": cfg, "gpu": provenance["gpu"], "versions": _env_versions(), "git_sha": provenance["git_sha"],
+               "config": {**cfg, **plan}, "gpu": provenance["gpu"], "versions": _env_versions(), "git_sha": provenance["git_sha"],
                "attempts": res.get("attempts", []),
                "load_s": load_s, "steps": res["step"], "total_steps": res["total_steps"], "losses": res["losses"],
                "step_times": res["step_times"], "peak_mem_gb": res["peak_mem_gb"], "fla_fast_path": fast,

@@ -138,3 +138,63 @@ def test_resume_records_attempts_and_progress(tmp_path):
     assert r2["stopped"] == "done" and r2["step"] == 12
     assert [(a["attempt"], a["node"], a["start_step"], a["end_step"], a["stopped"]) for a in r2["attempts"]] == [
         (1, "d4041", 0, 1, "wall"), (2, "d4052", 1, 12, "done")]
+
+
+def _lora_tensors(model):
+    return {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
+
+
+def _fresh(arm, cfg, model_key):
+    """A new process's view: rebuild the base and adapter, then seed the global RNG the way main() does."""
+    model = apply_lora(_tiny_gemma4(), cfg, MODELS[model_key])
+    torch.manual_seed(cfg["seed"])
+    return model
+
+
+@pytest.mark.parametrize("arm,dropout", [("gemma_al", 0.1), ("gemma_ex", 0.0)])
+@pytest.mark.parametrize("interruption", ["wall_guard", "hard_kill"])
+def test_resume_continues_exactly(tmp_path, arm, dropout, interruption):
+    """An interrupted-then-resumed run is bit-identical to an uninterrupted one: adapter weights, AdamW
+    moments, LR schedule, RNG (dropout masks) and data position all carry over, across the epoch boundary."""
+    cfg = _cfg(arm, epochs=2, save_every_steps=4)
+    cfg["lora"] = {**cfg["lora"], "dropout": dropout}
+    quiet = lambda m: None  # noqa: E731
+    ref_model = _fresh(arm, cfg, "gemma4_26b_a4b")
+    ref = train(ref_model, _blocks(), cfg, log=quiet)
+    assert ref["step"] == ref["total_steps"] == 12
+
+    first = _fresh(arm, cfg, "gemma4_26b_a4b")
+    if interruption == "wall_guard":     # stops at step 1 and checkpoints there (exit 3)
+        r1 = train(first, _blocks(), cfg, ckpt_dir=tmp_path, deadline=0.0, log=quiet)
+        assert r1["stopped"] == "wall" and r1["step"] == 1
+    else:                                # TIMEOUT / NODE_FAIL: killed after step 5, last checkpoint at step 4
+        train(first, _blocks(), cfg, max_steps=5, ckpt_dir=tmp_path, log=quiet)
+    torch.manual_seed(12345)             # a new process: the global RNG is wherever main() leaves it
+    second = _fresh(arm, cfg, "gemma4_26b_a4b")
+    logs = []
+    r2 = train(second, _blocks(), cfg, ckpt_dir=tmp_path, log=logs.append)
+    assert any("resumed at step" in line for line in logs)
+    assert r2["stopped"] == "done" and r2["step"] == 12
+    assert r2["losses"] == ref["losses"]                                   # every step, bit for bit
+    want, got = _lora_tensors(ref_model), _lora_tensors(second)
+    assert want.keys() == got.keys() and all(torch.equal(want[k], got[k]) for k in want)
+    assert r2["grad_norms"] == ref["grad_norms"]
+
+
+def test_resume_refuses_a_different_schedule(tmp_path):
+    cfg = _cfg("gemma_al", epochs=2, save_every_steps=1)
+    train(apply_lora(_tiny_gemma4(), cfg, MODELS["gemma4_26b_a4b"]), _blocks(), cfg, ckpt_dir=tmp_path,
+          deadline=0.0, log=lambda m: None)
+    other = {**cfg, "epochs": 1}
+    with pytest.raises(RuntimeError, match="checkpoint"):
+        train(apply_lora(_tiny_gemma4(), other, MODELS["gemma4_26b_a4b"]), _blocks(), other, ckpt_dir=tmp_path,
+              log=lambda m: None)
+
+
+def test_stop_request_checkpoints_like_the_wall_guard(tmp_path):
+    """SIGTERM at the Slurm time limit (KillWait gives 600 s) sets the stop flag: finish the step, save, exit 3."""
+    cfg = _cfg("gemma_al", epochs=2)
+    model = apply_lora(_tiny_gemma4(), cfg, MODELS["gemma4_26b_a4b"])
+    calls = iter([False, False, True])
+    res = train(model, _blocks(), cfg, ckpt_dir=tmp_path, log=lambda m: None, stop_requested=lambda: next(calls))
+    assert res["stopped"] == "wall" and res["step"] == 3 and (tmp_path / "state.pt").exists()

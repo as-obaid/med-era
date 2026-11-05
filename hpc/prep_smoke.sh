@@ -5,6 +5,7 @@
 # Cleaning and packing run in the CPU job that submit_smoke.sh submits (hpc/build_data.slurm).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=hpc/env.sh disable=SC1091
 source hpc/env.sh
 for w in w1 w2 w3; do
   python -m medera.collect harvest --window "$w" --query core --limit 20 --resume --data-root data/smoke
