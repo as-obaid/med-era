@@ -120,3 +120,21 @@ def test_gemma_ex_adapter_save_and_reload(tmp_path):
         reloaded = PeftModel.from_pretrained(_tiny_gemma4(), tmp_path / "adapter").eval()
         got = reloaded(input_ids=x).logits
     assert torch.allclose(want, got, atol=1e-5)
+
+
+def test_resume_records_attempts_and_progress(tmp_path):
+    import json
+
+    cfg = _cfg("gemma_al", save_every_steps=1, epochs=2)
+    first = apply_lora(_tiny_gemma4(), cfg, MODELS["gemma4_26b_a4b"])
+    a1 = {"attempt": 1, "job_id": "111", "node": "d4041", "gpu": "H100", "git_sha": "abc"}
+    r1 = train(first, _blocks(), cfg, ckpt_dir=tmp_path, deadline=0.0, log=lambda m: None, attempt=a1)
+    assert r1["stopped"] == "wall" and r1["total_steps"] == 12                      # 2 epochs x 6 steps
+    progress = json.loads((tmp_path / "progress.json").read_text())
+    assert progress["step"] == 1 and progress["total"] == 12 and progress["attempt"] == 1
+    second = apply_lora(_tiny_gemma4(), cfg, MODELS["gemma4_26b_a4b"])
+    a2 = {"attempt": 2, "job_id": "222", "node": "d4052", "gpu": "H200", "git_sha": "abc"}
+    r2 = train(second, _blocks(), cfg, ckpt_dir=tmp_path, log=lambda m: None, attempt=a2)
+    assert r2["stopped"] == "done" and r2["step"] == 12
+    assert [(a["attempt"], a["node"], a["start_step"], a["end_step"], a["stopped"]) for a in r2["attempts"]] == [
+        (1, "d4041", 0, 1, "wall"), (2, "d4052", 1, 12, "done")]

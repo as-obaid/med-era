@@ -65,3 +65,38 @@ def test_fast_path_detector():
     assert fast_path_status(fast) is True
     assert fast_path_status(slow) is False
     assert fast_path_status(torch.nn.Linear(2, 2)) is None
+
+
+def test_epochs_repeat_every_block_and_keep_epoch0_order():
+    import numpy as np
+
+    from medera.train.lora_cpt import micro_batch_rows, optimizer_steps
+
+    n, mb, seed, epochs = 10, 2, 42, 2
+    assert optimizer_steps(n_blocks=787, micro_batch=1, grad_accum=8, epochs=2) == 196   # qwen at 2 epochs
+    assert optimizer_steps(n_blocks=756, micro_batch=1, grad_accum=8, epochs=2) == 189   # gemma at 2 epochs
+    cache = {}
+    rows = [micro_batch_rows(m, n, mb, seed, cache) for m in range(epochs * (n // mb))]
+    flat = np.concatenate(rows)
+    assert sorted(flat.tolist()) == sorted(list(range(n)) * epochs)                      # each block once per epoch
+    order0 = np.random.default_rng(seed).permutation(n)                                   # the old single-epoch order
+    assert np.concatenate(rows[: n // mb]).tolist() == np.concatenate(
+        [np.sort(order0[i:i + mb]) for i in range(0, n, mb)]).tolist()
+    assert np.concatenate(rows[n // mb:]).tolist() != np.concatenate(rows[: n // mb]).tolist()  # new order in epoch 2
+
+
+def test_two_epochs_in_train_yaml_scale_warmup():
+    cfg = arm_config(TRAIN, "gemma_ex")
+    assert cfg["epochs"] == 2 and cfg["save_every_steps"] == 25
+    total = 189
+    warmup = max(1, round(cfg["warmup_ratio"] * total))
+    assert warmup == 6 and lr_at(total - 1, total, warmup) < 0.01
+
+
+def test_job_deadline_uses_slurm_end_minus_margin():
+    from medera.train.lora_cpt import job_deadline
+
+    cfg = {"wall_guard_hours": 7.25, "wall_margin_s": 300}
+    assert job_deadline(1000.0, cfg, env={}) == 1000.0 + 7.25 * 3600
+    assert job_deadline(1000.0, cfg, env={"MEDERA_JOB_END_EPOCH": "5000"}) == 4700
+    assert job_deadline(1000.0, cfg, env={"SLURM_JOB_END_TIME": "4000"}) == 3700

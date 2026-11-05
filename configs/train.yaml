@@ -14,11 +14,12 @@ defaults:
   micro_batch: 1
   grad_accum: 8            # 16,384 tokens per optimizer step
   max_grad_norm: 1.0
-  epochs: 1
+  epochs: 2                # owner decision: every adapter makes 2 passes over its equal-token budget
   seed: 42
   log_every: 10            # optimizer steps
-  save_every_steps: 50     # resumable checkpoint cadence
-  wall_guard_hours: 7.25   # save and exit 3 before the 8 h wall; resubmit to resume
+  save_every_steps: 25     # resumable checkpoint cadence (also saved right before the deadline)
+  wall_guard_hours: 7.25   # fallback when there is no Slurm end time; save and exit 3, resubmit to resume
+  wall_margin_s: 300       # stop this long before the Slurm job end (SLURM_JOB_END_TIME) to save a checkpoint
   smoke_steps: 4           # optimizer steps in --smoke
 
 arms:

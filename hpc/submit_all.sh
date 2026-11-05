@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SUPERSEDED for the real launch by hpc/dispatch.sh (1-h jobs across sharing/gpu-short/gpu-interactive within
+# the per-partition MaxSubmit limits). Kept for the 8-h `gpu` partition path.
 # Submit the core training runs (3 arms x 3 windows = 9 adapters) within the gpu QOS limits:
 # at most MEDERA_MAX_SUBMITTED (8) gpu jobs submitted per user; the QOS itself caps running jobs at 4.
 # Idempotent: skips finished runs (adapter saved) and runs already queued, so rerun it to top up the
