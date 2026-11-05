@@ -17,15 +17,15 @@ adapters() {
 }
 
 # gpu_nodes allow|exclude  <  `sinfo -h -N -p <parts> -o "%N|%P|%G|%f"`   ->  "<node> <gpu type>" lines
-# allow = h100, h200, and a100 carrying the a100@80g feature (all >= 80 GB); exclude = every other GPU node.
+# allow = h100 and h200 only (owner decision: sharing H100 + H200); exclude = every other GPU node, including
+# every a100 (a100@80g too).
 # CPU-only nodes (no gpu gres) are left out of both: they can never satisfy --gres=gpu:1.
 gpu_nodes() {
   awk -F'|' -v want="$1" '
     $3 ~ /^gpu:/ {
       split($3, g, ":"); type = g[2]
-      ok = (type == "h100" || type == "h200" || (type == "a100" && $4 ~ /(^|,)a100@80g(,|$)/))
-      label = (type == "a100" && ok) ? "a100@80g" : type
-      if ((want == "allow") == ok) seen[$1] = label
+      ok = (type == "h100" || type == "h200")
+      if ((want == "allow") == ok) seen[$1] = type
     }
     END { for (n in seen) print n, seen[n] }' | sort -u
 }

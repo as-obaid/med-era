@@ -12,11 +12,19 @@ c2204|gpu-short|gpu:v100-pcie:2(S:0-7)|zen,prod
 d1026|gpu-short|gpu:a100:3|ib,zen2,prod
 d1028|gpu-interactive|gpu:a100:4|zen2,prod,ib,a100@80g
 d1028|gpu-short|gpu:a100:4|zen2,prod,ib,a100@80g
+d1029|gpu-interactive|gpu:a100:4|zen2,prod,ib,a100@80g
+d1029|gpu-short|gpu:a100:4|zen2,prod,ib,a100@80g
 d3146|sharing|gpu:a100:8|zen2,prod,dgx
 d4041|sharing|gpu:h100:4|ib,cascadelake,prod
 d4042|sharing|gpu:l40s:8|ib,zen2,prod
 d4052|gpu-short|gpu:h200:8|cascadelake,prod
 d4052|gpu-interactive|gpu:h200:8|cascadelake,prod
+d4053|gpu-short|gpu:h200:8|cascadelake,prod
+d4053|gpu-interactive|gpu:h200:8|cascadelake,prod
+d4054|gpu-short|gpu:h200:8|cascadelake,prod
+d4054|gpu-interactive|gpu:h200:8|cascadelake,prod
+d4055|gpu-short|gpu:h200:8|cascadelake,prod
+d4055|gpu-interactive|gpu:h200:8|cascadelake,prod
 d4077|sharing|gpu:h200:8|(null)
 """
 
@@ -28,9 +36,12 @@ def bash(script: str, stdin: str = "") -> str:
 
 
 def test_gpu_allow_and_exclude_lists():
-    assert bash("gpu_nodes allow", SINFO) == "d1028 a100@80g\nd4041 h100\nd4052 h200\nd4077 h200"
-    assert bash("gpu_nodes exclude", SINFO) == "c2204 v100-pcie\nd1026 a100\nd3146 a100\nd4042 l40s"
-    assert bash("exclude_csv", SINFO) == "c2204,d1026,d3146,d4042"          # CPU-only nodes never get gpu:1
+    # Owner decision: H100 (sharing) + H200 only; every A100, a100@80g included, is excluded.
+    assert bash("gpu_nodes allow", SINFO).split("\n") == ["d4041 h100", "d4052 h200", "d4053 h200", "d4054 h200",
+                                                         "d4055 h200", "d4077 h200"]
+    assert bash("gpu_nodes exclude", SINFO).split("\n") == ["c2204 v100-pcie", "d1026 a100", "d1028 a100", "d1029 a100",
+                                                           "d3146 a100", "d4042 l40s"]
+    assert bash("exclude_csv", SINFO) == "c2204,d1026,d1028,d1029,d3146,d4042"   # CPU-only nodes never get gpu:1
 
 
 @pytest.mark.parametrize("state,code,decision", [

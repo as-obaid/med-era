@@ -8,10 +8,10 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=/scratch/%u/med-era/runs/logs/%x_%j.out
 # One adapter (arm x window): `epochs` passes over the equal-token budget, then the adapter audit.
-# Normally submitted by hpc/dispatch.sh, which adds --exclude=<GPU nodes under 80 GB> (hpc/_dispatch_lib.sh):
+# Normally submitted by hpc/dispatch.sh, which adds --exclude=<every non-H100/H200 GPU node> (hpc/_dispatch_lib.sh):
 #   sbatch --exclude=... hpc/train.slurm <arm> <window>     (`bash hpc/dispatch.sh --dry-run` prints the exact call)
 # The job starts on whichever allowed GPU frees first (H100 in sharing, H200 in gpu-short/gpu-interactive or
-# sharing, A100 80 GB). It checkpoints every save_every_steps and right before the job's end time
+# sharing). It checkpoints every save_every_steps and right before the job's end time
 # (SLURM_JOB_END_TIME minus wall_margin_s), or on the SIGTERM Slurm sends at the limit, then exits 3; the next
 # attempt resumes exactly from runs/checkpoints/<arm>_<window>/. Exit 4 = landed on a GPU under 79 GB (bf16 arms;
 # the dispatcher resubmits and excludes that node).

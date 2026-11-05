@@ -27,7 +27,7 @@ d4052|gpu-short|gpu:h200:8|cascadelake,prod
 d4052|gpu-interactive|gpu:h200:8|cascadelake,prod
 d4077|sharing|gpu:h200:8|(null)
 """
-EXCLUDE = "c2204,d1026,d4042"
+EXCLUDE = "c2204,d1026,d1029,d4042"          # every A100 is excluded, a100@80g too
 
 # Job table: id|name|partition|state|exitcode|nodelist|comment. Only PENDING/RUNNING rows are "in the queue".
 SHIMS = {
@@ -281,7 +281,10 @@ def test_dry_run_prints_the_plan_and_changes_nothing(cluster):
     assert not (cluster.logs / "dispatch.pid").exists() and not list(cluster.logs.glob("*dry-run*"))
     plan = [line.split()[2] for line in out.splitlines() if line.strip().startswith("WOULD SUBMIT")]
     assert plan == ORDER[:4]
-    assert "d4041 h100" in out and "d4042 l40s" in out and "d1026 a100" in out and "d1029 a100@80g" in out
+    nodes = out.split("allowed GPU nodes", 1)[1].split("plan for this poll:")[0].splitlines()
+    allowed = nodes[1:nodes.index(next(n for n in nodes if n.startswith("excluded")))]
+    assert [n.strip() for n in allowed] == ["d4041 h100", "d4052 h200", "d4077 h200"]
+    assert "d1029 a100" in out and "d1026 a100" in out and "d4042 l40s" in out and "a100@80g" not in out
     assert "MEDERA_ATTEMPT=1" in out and "free submit slots: 4" in out
 
 

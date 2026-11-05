@@ -195,7 +195,7 @@ anything is probed.
 | Block length | 2048 tokens |
 | Data per adapter | 2 epochs over the equal-token budget (189–196 optimizer steps of 16,384 tokens) |
 | Seed | 42 |
-| Compute | One 80 GB-class GPU (H100 or H200) per 1-hour job on Northeastern's Explorer cluster, resumed from checkpoints |
+| Compute | One H100 or H200 GPU per 1-hour job on Northeastern's Explorer cluster, resumed from checkpoints |
 
 </details>
 

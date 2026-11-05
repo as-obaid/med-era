@@ -23,7 +23,7 @@ defaults:
   smoke_steps: 4           # optimizer steps in --smoke
 
 arms:
-  # core: bf16 LoRA on one >= 80 GB GPU per 1-h job (sharing H100, gpu-short/gpu-interactive/sharing H200),
+  # core: bf16 LoRA on one H100 or H200 per 1-h job (sharing H100, gpu-short/gpu-interactive/sharing H200),
   # resumed from checkpoints by hpc/dispatch.sh (owner decision)
   qwen:        {model: qwen35_27b,     experts: false, precision: bf16}
   gemma_al:    {model: gemma4_26b_a4b, experts: false, precision: bf16}

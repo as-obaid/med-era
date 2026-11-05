@@ -2,8 +2,8 @@
 # Training dispatcher: a low-CPU bash loop for the LOGIN node (no Python there; it only calls Slurm tools).
 # Keeps up to MEDERA_MAX_SUBMIT (4) adapter jobs submitted across sharing, gpu-short and gpu-interactive: a pending
 # multi-partition job counts against every partition's per-user MaxSubmit, and sharing and gpu-interactive allow 4
-# (a 9-task array is refused). Each job asks for one GPU (--gres=gpu:1) with every GPU node under 80 GB excluded
-# (h100, h200 and a100@80g remain; list built from sinfo at each submit), 1 h. Every MEDERA_POLL_S (150 s) it
+# (a 9-task array is refused). Each job asks for one GPU (--gres=gpu:1) with every GPU node except H100/H200
+# excluded (A100s too; list built from sinfo at each submit), 1 h. Every MEDERA_POLL_S (150 s) it
 # submits the next adapters in launch order (w1 qwen, gemma_al, gemma_ex, then w2, then w3) into free slots,
 # resubmits TIMEOUT / NODE_FAIL / PREEMPTED / wall-guard (exit 3) / small-GPU (exit 4) jobs so they resume from
 # their checkpoint (at most MEDERA_MAX_ATTEMPTS = 3 attempts per adapter), never resubmits a Python or audit
@@ -44,7 +44,7 @@ log() {
 }
 last_lines() { tail -3 "$1" 2>/dev/null | tr '\n' ' ' | cut -c1-400; }
 
-# Every GPU node under 80 GB in $PARTS (sinfo, now) plus nodes a job found too small. Fails when sinfo lists no
+# Every GPU node in $PARTS that is not H100/H200 (sinfo, now) plus nodes a job found too small. Fails when sinfo lists no
 # allowed node, so a Slurm hiccup never leads to a submit with a missing exclude list.
 exclude_list() {
   local nodes
@@ -65,7 +65,7 @@ submit() {  # submit <arm:window>; returns 1 if nothing was submitted (e.g. Slur
   local ad=$1 attempts job status n out id
   read -r attempts job status <<< "$(state_get "$ad")"
   n=$((attempts + 1))
-  if ! sbatch_args "$ad" "$n"; then log "$ad not submitted: sinfo lists no >= 80 GB GPU node in $PARTS"; return 1; fi
+  if ! sbatch_args "$ad" "$n"; then log "$ad not submitted: sinfo lists no H100/H200 node in $PARTS"; return 1; fi
   if [ "$MODE" = dry ]; then
     printf '  WOULD SUBMIT %-12s attempt %s: sbatch --parsable %s\n' "$ad" "$n" \
       "$(printf '%s ' "${CMD[@]}" | sed 's/--exclude=[^ ]*/--exclude=<the excluded nodes above>/')"
@@ -189,7 +189,7 @@ acquire_lock() {  # one dispatcher at a time, recorded as "<host> <pid>" in the 
 print_nodes() {
   local nodes
   nodes=$(sinfo -h -N -p "$PARTS" -o "$SINFO_FMT" 2>/dev/null)
-  echo "allowed GPU nodes (>= 80 GB) in $PARTS:"; gpu_nodes allow <<< "$nodes" | sed 's/^/  /'
+  echo "allowed GPU nodes (H100/H200) in $PARTS:"; gpu_nodes allow <<< "$nodes" | sed 's/^/  /'
   echo "excluded GPU nodes (passed as --exclude):"; gpu_nodes exclude <<< "$nodes" | sed 's/^/  /'
   if [ -s "$EXTRA" ]; then echo "also excluded (a job found a GPU under 79 GB):"; sort -u "$EXTRA" | sed 's/^/  /'; fi
 }
@@ -201,7 +201,7 @@ case $MODE in
     for ad in $(adapters); do done_marker "${ad%%:*}" "${ad##*:}" || { next=$ad; break; }; done
     [ -n "$next" ] || { echo "all adapters are done"; exit 0; }
     read -r attempts _ _ <<< "$(state_get "$next")"
-    sbatch_args "$next" $((attempts + 1)) || { echo "sinfo lists no >= 80 GB GPU node in $PARTS"; exit 1; }
+    sbatch_args "$next" $((attempts + 1)) || { echo "sinfo lists no H100/H200 node in $PARTS"; exit 1; }
     echo "next adapter: $next (attempt $((attempts + 1)))"
     echo "+ sbatch --test-only ${CMD[*]}"
     sbatch --test-only "${CMD[@]}"
