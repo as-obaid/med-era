@@ -48,6 +48,15 @@ filters:
   exclude_article_types: [correction, retraction, erratum, expression-of-concern, retraction-notice]
   exclude_title_regex: '^\s*(correction|corrigendum|erratum|errata|retraction|retracted|notice of retraction|expression of concern)\b'
   languages: [en]
+  relevance_labels: manifests/relevance_labels.csv   # under --data-root; written by `collect screen-import`
+  keep_labels: [relevant, borderline]                # every harvested article must have a label (hard error)
+
+screen:                         # blinded relevance screen (docs/relevance_screen.md)
+  dir: raw/screen               # under --data-root, gitignored: batches/, labels/, key.csv (salt + map)
+  batch_size: 200
+  shuffle_seed: 42
+  double_frac: 0.10             # re-screened subset for agreement and Cohen's kappa
+  double_seed: 42
 
 split:
   heldout_frac: 0.05

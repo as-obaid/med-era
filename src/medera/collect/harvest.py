@@ -164,6 +164,7 @@ def harvest(client, cfg, window, query_id, data_root, limit=None, resume=False, 
             continue
         if xml is None:
             stats["not_found"] += 1
+            print(f"[harvest] {pmcid}: full text not found (404/500)", flush=True)
             continue
         try:
             row = manifest_row(result, window, query_id, xml, today, cfg)

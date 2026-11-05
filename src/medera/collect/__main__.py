@@ -1,11 +1,13 @@
 """CLI: python -m medera.collect count | harvest | merge"""
 import argparse
 import csv
+from collections import Counter
 from pathlib import Path
 
 from medera.collect.europepmc import EuropePMC
 from medera.collect.harvest import harvest
 from medera.collect.manifest import DROPPED_COLUMNS, merge, read_manifest, write_manifest
+from medera.collect.screen import agreement_summary, export_window, import_labels, write_import
 from medera.collect.query import COUNT_COLUMNS, PART_COLUMNS, count_rows, or_guard, part_count_rows
 from medera.config import load_yaml
 from medera.preprocess.filters import is_usable
@@ -87,6 +89,32 @@ def cmd_merge(cfg, root: Path, args) -> None:
     print(f"[merge] wrote {path} ({len(out)} rows) and {dropped_path} ({len(dropped)} dropped)")
 
 
+def cmd_screen_export(cfg, root: Path, args) -> None:
+    batches = export_window(cfg, root, args.window, args.batch_size or cfg["screen"]["batch_size"], args.overwrite)
+    for name, n in batches:
+        print(f"[screen] {name}.jsonl {n} items")
+    print(f"[screen] {args.window}: {sum(n for b, n in batches if '_b' in b)} items in "
+          f"{sum('_b' in b for b, _ in batches)} batches + {sum(n for b, n in batches if '_d' in b)} double-screen; "
+          f"key -> {root / cfg['screen']['dir'] / 'key.csv'}")
+
+
+def cmd_screen_import(cfg, root: Path, args) -> None:
+    labels, agreement, errors, warnings = import_labels(cfg, root, args.window, args.screener)
+    for w in warnings:
+        print(f"[screen] warning: {w}")
+    if errors:
+        for e in errors:
+            print(f"[screen] ERROR: {e}")
+        raise SystemExit(1)
+    lp, ap = write_import(cfg, root, labels, agreement)
+    for w in sorted({r["window"] for r in labels}):
+        c = Counter(r["label"] for r in labels if r["window"] == w)
+        print(f"[screen] {w}: " + " ".join(f"{k}={c[k]}" for k in ("relevant", "borderline", "off_topic")))
+    for name, n, rate, kappa in agreement_summary(agreement):
+        print(f"[screen] double-screen {name}: n={n} agreement={rate:.3f} kappa={kappa:.3f}")
+    print(f"[screen] wrote {lp} ({len(labels)} labels) and {ap} ({len(agreement)} pairs)")
+
+
 def main(argv=None) -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", default="configs/corpus.yaml")
@@ -104,12 +132,21 @@ def main(argv=None) -> None:
     h.add_argument("--rank-by", choices=["hrt-density"], default=None)
     h.add_argument("--top-up-to", type=int, default=None, help="stop at N usable rows (implies --resume)")
     sub.add_parser("merge", parents=[common], help="dedupe window manifests -> hrt_all.csv")
+    se = sub.add_parser("screen-export", parents=[common], help="blinded relevance-screen batches for one window")
+    se.add_argument("--window", required=True)
+    se.add_argument("--batch-size", type=int, default=None, help="items per batch (default: screen.batch_size)")
+    se.add_argument("--overwrite", action="store_true", help="re-export a window that was already exported")
+    si = sub.add_parser("screen-import", parents=[common], help="validate + un-blind labels -> relevance_labels.csv")
+    si.add_argument("--window", action="append", default=None, help="limit to these windows (repeatable)")
+    si.add_argument("--screener", default="claude-code-subagent", help="screener id when a label line has none")
     args = ap.parse_args(argv)
 
     cfg = load_yaml(args.config)
-    if args.cmd == "harvest" and args.window not in cfg["windows"]:
+    if args.cmd in ("harvest", "screen-export") and args.window not in cfg["windows"]:
         ap.error(f"--window must be one of {list(cfg['windows'])}")
-    {"count": cmd_count, "harvest": cmd_harvest, "merge": cmd_merge}[args.cmd](cfg, Path(args.data_root), args)
+    commands = {"count": cmd_count, "harvest": cmd_harvest, "merge": cmd_merge,
+                "screen-export": cmd_screen_export, "screen-import": cmd_screen_import}
+    commands[args.cmd](cfg, Path(args.data_root), args)
 
 
 if __name__ == "__main__":

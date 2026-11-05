@@ -126,21 +126,65 @@ def article_meta(xml: bytes) -> dict:
 
 CC_URL = re.compile(r"creativecommons\.org/(?:licenses/((?:by|nc|nd|sa)(?:-(?:by|nc|nd|sa))*)|publicdomain/(zero|mark))",
                     re.IGNORECASE)
+CC_ABBR = re.compile(r"\bCC[- ]?(BY(?:[- ](?:NC|ND|SA))*)\b|\b(CC0)\b", re.IGNORECASE)
+CC_LONG = re.compile(r"creative commons attribution(?:[- ,]+(?:non-?commercial|no-?deriv\w*|share-?alike))*", re.IGNORECASE)
+COPYRIGHT_BLOCK = re.compile(r"^\s*(?:copyright\b|©|\(c\)\s*\d{4})", re.IGNORECASE)
+
+
+def _cc(s: str) -> str | None:
+    """A Creative Commons license named in `s` (URL, "CC BY-NC" or the long name), in Europe PMC's vocabulary."""
+    m = CC_URL.search(s)
+    if m:
+        return {"zero": "cc0", "mark": "public domain"}[m.group(2).lower()] if m.group(2) else f"cc {m.group(1).lower()}"
+    m = CC_ABBR.search(s)
+    if m:
+        return "cc0" if m.group(2) else "cc " + re.sub(r"[- ]", "-", m.group(1).lower())
+    m = CC_LONG.search(s)
+    if m:
+        name = m.group(0).lower()
+        return "cc " + "-".join(["by"] + [code for code, pat in (("nc", "commercial"), ("nd", "deriv"), ("sa", "share"))
+                                          if pat in name])
+    return None
+
+
+def _permissions(root):
+    p = root.find("front/article-meta/permissions")
+    return p if p is not None else root.find(".//permissions")
 
 
 def article_license(xml: bytes) -> str:
-    """License from the article's <permissions><license>: Creative Commons URLs normalized to Europe PMC's
-    vocabulary ("cc by-nc-nd", "cc0"), else @license-type, else "xml: " + the first 100 characters of the
-    license text (e.g. publisher COVID-19 grants). "" when the XML has no <license>."""
-    lic = _parse(xml).find(".//permissions/license")
-    if lic is None:
+    """License from the article's <permissions>. A Creative Commons license (URL, abbreviation or long name) is
+    normalized to Europe PMC's vocabulary ("cc by-nc-nd", "cc0"). Otherwise <license> gives its @license-type or
+    "xml: " + its first 100 characters (e.g. publisher COVID-19 grants). Without <license>, only a CC license
+    named in <copyright-statement> counts (e.g. PMC3880986); a bare copyright line is not a license -> ""."""
+    perms = _permissions(_parse(xml))
+    if perms is None:
         return ""
-    text = _clean(" ".join(lic.itertext()))
-    hrefs = [v for el in lic.iter() for k, v in el.attrib.items() if k.endswith("href")]
-    for s in hrefs + [text]:
-        m = CC_URL.search(s)
-        if m:
-            return {"zero": "cc0", "mark": "public domain"}[m.group(2).lower()] if m.group(2) else f"cc {m.group(1).lower()}"
-    if lic.get("license-type"):
-        return lic.get("license-type")
-    return f"xml: {text[:100].rstrip()}" if text else ""
+    for tag in ("license", "copyright-statement"):
+        el = perms.find(tag)
+        if el is None:
+            continue
+        text = _clean(" ".join(el.itertext()))
+        hrefs = [v for e in el.iter() for k, v in e.attrib.items() if k.endswith("href")]
+        for s in hrefs + [text]:
+            cc = _cc(s)
+            if cc:
+                return cc
+        if tag == "license":
+            if el.get("license-type"):
+                return el.get("license-type")
+            return f"xml: {text[:100].rstrip()}" if text else ""
+    return ""
+
+
+def screen_fields(xml: bytes) -> dict:
+    """Title, abstract and keywords for the blinded relevance screen: no journal, dates, IDs or license.
+    Abstract paragraphs that are copyright lines ("© 2013 Elsevier ...") are dropped, since they leak the year."""
+    root = _parse(xml)
+    _drop(root, _is_dropped)
+    blocks = []
+    for container in root.findall("front/article-meta/abstract"):
+        _blocks(container, blocks)
+    abstract = "\n\n".join(b for b in map(_clean, blocks) if b and not COPYRIGHT_BLOCK.match(b))
+    keywords = [k for k in (_clean(_text(kw)) for kw in root.findall("front/article-meta/kwd-group/kwd")) if k]
+    return {"title": _title(root), "abstract": abstract, "keywords": keywords}

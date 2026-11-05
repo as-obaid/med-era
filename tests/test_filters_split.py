@@ -120,6 +120,9 @@ def test_text_cli_writes_jsonl_and_excluded(tmp_path, repo_root, make_jats):
     write_manifest(tmp_path / "manifests" / "hrt_all.csv",
                    [_row(p, windows[p], dates.get(p, "2014-01-01"))
                     for p in ("PMC2", "PMC1", "PMC3", "PMC4", "PMC5", "PMC6", "PMC7", "PMC8")])
+    with open(tmp_path / "manifests" / "relevance_labels.csv", "w", newline="") as f:  # every article screened
+        f.write("pmcid,window,label,off_topic_class,screener,screened_on\n")
+        f.writelines(f"{p},{windows[p]},relevant,,s,2026-11-04\n" for p in docs)
     main(["text", "--config", str(repo_root / "configs" / "corpus.yaml"), "--data-root", str(tmp_path)])
     out = tmp_path / "processed" / "hrt"
     w1 = [json.loads(line) for line in (out / "w1.jsonl").read_text().splitlines()]

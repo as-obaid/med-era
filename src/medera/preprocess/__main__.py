@@ -16,6 +16,25 @@ from medera.preprocess.near_dup import near_duplicates
 from medera.preprocess.split import heldout_split
 
 
+def load_relevance_labels(cfg: dict, root: Path, rows: list[dict], opt_out: bool) -> dict | None:
+    """pmcid -> screen label for every harvested article. A missing file or any unlabelled article is a hard
+    error, never a silent keep; --no-relevance-screen (smoke data only) skips the screen loudly."""
+    if opt_out:
+        print("[text] WARNING: --no-relevance-screen: relevance screen NOT applied (smoke data only)", flush=True)
+        return None
+    path = root / cfg["filters"]["relevance_labels"]
+    if not path.exists():
+        raise SystemExit(f"[text] {path} is missing: run the relevance screen (collect screen-export / "
+                         f"screen-import) first; every harvested article needs a label")
+    with open(path, newline="", encoding="utf-8") as f:
+        labels = {r["pmcid"]: r["label"] for r in csv.DictReader(f)}
+    unlabelled = [r["pmcid"] for r in rows if r["pmcid"] not in labels]
+    if unlabelled:
+        raise SystemExit(f"[text] {len(unlabelled)} harvested articles have no relevance label in {path} "
+                         f"(first: {unlabelled[:10]}); screen them before building")
+    return labels
+
+
 def cmd_text(cfg: dict, root: Path, args) -> None:
     corpus = cfg["corpus"]
     rows = read_manifest(root / "manifests" / f"{corpus}_all.csv")
@@ -23,6 +42,8 @@ def cmd_text(cfg: dict, root: Path, args) -> None:
     missing = [r["pmcid"] for r in rows if not (raw / r["window"] / f"{r['pmcid']}.xml").exists()]
     if missing:
         raise SystemExit(f"[text] {len(missing)} XML files missing under {raw} (first: {missing[:5]})")
+    labels = load_relevance_labels(cfg, root, rows, args.no_relevance_screen)
+    keep_labels = set(cfg["filters"]["keep_labels"])
     out.mkdir(parents=True, exist_ok=True)
     texts = {w: {} for w in cfg["windows"]}
     reasons = {w: {} for w in cfg["windows"]}
@@ -37,6 +58,8 @@ def cmd_text(cfg: dict, root: Path, args) -> None:
             reasons[w][pmcid] = "parse_error"
             continue
         reason = exclusion_reason(text, meta, cfg["filters"])
+        if not reason and labels is not None and labels[pmcid] not in keep_labels:
+            reason = "off_topic_screen"
         if reason:
             reasons[w][pmcid] = reason
         else:
@@ -66,8 +89,9 @@ def cmd_text(cfg: dict, root: Path, args) -> None:
                 f.write(json.dumps({"pmcid": pmcid, "split": split, "text": texts_w[pmcid]}, ensure_ascii=False) + "\n")
         excluded += [{"pmcid": p, "window": w, "reason": reasons_w[p]} for p in sorted(reasons_w)]
         chars = sum(len(t) for t in texts_w.values())
+        screened = Counter(labels[r["pmcid"]] for r in rows if r["window"] == w) if labels is not None else {}
         print(f"[text] {w}: kept={len(texts_w)} (train={len(train)} heldout={len(held)}) chars={chars:,} "
-              f"excluded={dict(Counter(reasons_w.values()))}", flush=True)
+              f"excluded={dict(Counter(reasons_w.values()))} screen={dict(screened)}", flush=True)
         if "parse_error" in reasons_w.values():
             print(f"[text] WARNING: {w} has XML that does not parse", flush=True)
     with open(out / "excluded.csv", "w", newline="", encoding="utf-8") as f:
@@ -140,7 +164,9 @@ def main(argv=None) -> None:
     common.add_argument("--data-root", default="data")
     ap = argparse.ArgumentParser(prog="python -m medera.preprocess", description="JATS to text, budget, packing")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("text", parents=[common], help="hrt_all.csv + raw XML -> <window>.jsonl, excluded.csv")
+    t = sub.add_parser("text", parents=[common], help="hrt_all.csv + raw XML -> <window>.jsonl, excluded.csv")
+    t.add_argument("--no-relevance-screen", action="store_true",
+                   help="skip the relevance-label gate (smoke data only; logged loudly)")
     p = sub.add_parser("pack", parents=[common], help="tokenize, equal budget, pack -> .npy + budget.json")
     p.add_argument("--model", required=True, help="key in models.yaml")
     p.add_argument("--models", default="configs/models.yaml")

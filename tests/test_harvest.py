@@ -269,3 +269,27 @@ def test_topup_never_adds_zero_density_docs(cfg, make_jats, tmp_path):
     s = harvest(client, cfg, "w1", "broad", tmp_path, rank_by="hrt-density", top_up_to=5)
     assert client.fetched() == ["PMC2"]
     assert s["zero_density_skipped"] == 1
+
+
+def test_harvest_logs_pmcid_of_every_not_found(cfg, make_jats, tmp_path, capsys):
+    client = FakeClient([res("PMC1"), res("PMC2")], {"PMC1": None, "PMC2": make_jats(body=LONG)})
+    s = harvest(client, cfg, "w1", "core", tmp_path)
+    assert s["not_found"] == 1
+    assert "PMC1: full text not found (404/500)" in capsys.readouterr().out
+
+
+IVYSPRING = ('<permissions><copyright-statement>© Ivyspring International Publisher. This is an open-access article '
+             'distributed under the terms of the Creative Commons License '
+             '(http://creativecommons.org/licenses/by-nc-nd/3.0/). Reproduction is permitted.</copyright-statement>'
+             '</permissions>')
+COPYRIGHT_NAME = ('<permissions><copyright-statement>Copyright 2014 The Authors. Published under the CC BY-NC 4.0 '
+                  'license.</copyright-statement></permissions>')
+COPYRIGHT_ONLY = '<permissions><copyright-statement>© 2013 Elsevier Ireland Ltd.</copyright-statement></permissions>'
+
+
+def test_license_falls_back_to_copyright_statement(cfg, make_jats):
+    """PMC3880986: no <license>, but the CC URL sits in <copyright-statement>."""
+    row = lambda xml: manifest_row(res("PMC1", license=""), "w1", "core", xml, "2026-11-04", cfg)["license"]  # noqa: E731
+    assert row(_with_permissions(make_jats, IVYSPRING)) == "cc by-nc-nd"
+    assert row(_with_permissions(make_jats, COPYRIGHT_NAME)) == "cc by-nc"
+    assert row(_with_permissions(make_jats, COPYRIGHT_ONLY)) == ""          # a copyright line is not a license
