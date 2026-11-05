@@ -1,6 +1,6 @@
 # MedEra pre-registration
 
-**Status:** DRAFT, not yet approved by the owner. This is the builder's draft. It becomes the registration only
+**Status:** DRAFT, not yet approved by the owner. Draft for review. It becomes the registration only
 when the owner edits it as needed, changes this status line to read approved, freezes `configs/probes.yaml`
 (`status: frozen`) and tags that commit `prereg-v1`. The probing code refuses to probe any trained adapter before then
 (`src/medera/probe/gate.py`).
@@ -13,6 +13,11 @@ This document is committed and tagged **after the 9 adapters were trained and be
 probed**. The training settings were fixed before training started and did not change during it (all 9 adapters at
 commit `242f148`). Held-out perplexity (the manipulation check) may be computed before the tag; nothing that reads
 probe answers from a trained adapter may be.
+
+The perplexity results were computed and known when this document was frozen: all 9 adapters passed the gate in §7,
+with held-out perplexity −0.81% to −2.89% relative to the base model on their own era (T3,
+[`results/tables/T3_perplexity.md`](../results/tables/T3_perplexity.md)). No probe answer from a trained adapter had
+been generated.
 
 ## 2. Design (fixed)
 

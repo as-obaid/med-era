@@ -2,7 +2,7 @@
 
 # MedEra: Temporal Adaptation of Medical LLMs
 
-**Studying how LoRA/QLoRA training on medical literature from different eras shifts LLM responses.**
+**Studying how LoRA training on medical literature from different eras shifts LLM responses.**
 
 [![Status: in progress](https://img.shields.io/badge/status-in%20progress-orange)](#roadmap)
 [![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
@@ -10,7 +10,7 @@
 [![Data: Europe PMC](https://img.shields.io/badge/data-Europe%20PMC%20open%20access-2E7D32)](https://europepmc.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[The question](#the-question) · [Design](#design) · [How it works](#how-it-works) · [Measures](#measures-and-analysis) · [Corpus](#corpus) · [Results](#results) · [Roadmap](#roadmap)
+[The question](#the-question) · [Design](#design) · [How it works](#how-it-works) · [Measures](#measures-and-analysis) · [Corpus](#corpus) · [Results](#results) · [Documents](#documents) · [Reproduce](#reproduce) · [Roadmap](#roadmap)
 
 </div>
 
@@ -36,9 +36,9 @@ replacement therapy (HRT) for menopause, where guidance changed several times be
 | **Models** | Qwen3.5-27B (dense)<br>Gemma-4-26B-A4B (mixture of experts) |
 | **Adaptation** | bf16 LoRA continued pretraining, one adapter per window, equal token budget |
 | **Variants** | 11: 9 adapters and 2 base models |
-| **Corpus** | Open-access HRT articles from Europe PMC, assigned to a window by first publication date |
+| **Corpus** | 1,913 open-access HRT articles from Europe PMC, kept after a blinded relevance screen and assigned to a window by first publication date |
 | **Primary measure** | Rate of individualization language, from rule-based markers (no judge) |
-| **Status** | In progress: AAI 6620 final project, Fall 2026. Corpus hit counts done; no results yet. |
+| **Status** | Training and perplexity check done (2026-11-05): 9 of 9 adapters trained, audited and past the perplexity gate. Probing waits on the pre-registration freeze. AAI 6620 final project, Fall 2026. |
 
 ## The question
 
@@ -83,13 +83,17 @@ so standard `all-linear` LoRA never adapts them. Gemma-EX targets those tensors 
 
 - Gemma-AL and Gemma-EX differ in one thing only: whether the experts are adapted.
 - Both run in bf16 and exclude the vision tower, so precision and vision parameters are not confounds.
-- Gemma-EX has more trainable parameters than Gemma-AL. The counts are reported, not matched.
-- A smoke test confirms that PEFT reaches the fused experts. If it does not, the experts are first
-  split into per-expert linear layers so that Gemma stays in the study.
+- Both Gemma arms adapt attention, the dense MLP and the router. Gemma-EX also adapts the 120 fused
+  expert tensors, so it has more trainable parameters: 495.8M against 20.0M LoRA parameters (1.92%
+  against 0.08% of the base model; [T2](results/tables/T2_adapter_audit.md)). The counts are
+  reported, not matched.
+- PEFT reaches the fused experts. The smoke test showed it first, and the adapter audit confirms it
+  for all three Gemma-EX adapters: 120 of 120 expert LoRA tensors receive nonzero gradients, and no
+  adapter in any arm touches a vision tensor.
 
-**Stretch arms**, run only if the core study finishes early: a cumulative 2011–2026 window per arm,
-a Gemma 4-bit QLoRA arm to test precision separately, and a general women's-health corpus to compare
-a diluted corpus with an HRT-dense one.
+**Stretch arms** (not run), only if the core study finishes early: a cumulative 2011–2026 window per
+arm, a Gemma 4-bit QLoRA arm to test precision separately, and a general women's-health corpus to
+compare a diluted corpus with an HRT-dense one.
 
 ## How it works
 
@@ -163,14 +167,18 @@ training tokens.
   one collector per window.
 - **One window per paper.** Each article is assigned by its first publication date. A merge step
   removes duplicates across windows and checks that no paper appears in two.
+- **Relevance screen.** Every harvested article is labelled relevant, borderline or off-topic from
+  its title, abstract and keywords, blind to date, journal, identifiers and license. Only relevant and
+  borderline articles are kept (see [Corpus](#corpus)).
 - **Minimal cleaning.** JATS XML is flattened to text, and reference lists, tables, figures, back
   matter and inline citation markers are dropped. Casing, punctuation, numbers and negation are kept,
   with no lowercasing, stemming or stop-word removal, because the model's subword tokenizer needs
   them.
-- **Held-out split.** About 5% of each window is held out (seed 42) for the perplexity checks.
-- **Equal-token budget.** Every adapter trains on the token count of the smallest window, for the same
-  2 epochs. Larger windows are randomly downsampled to match, so era is not confounded with data
-  volume or epochs.
+- **Held-out split.** 5% of each window is held out (seed 42) for the perplexity checks: 96 articles
+  (w1 16, w2 22, w3 58), never trained on.
+- **Equal-token budget.** Every adapter trains on the token count of the smallest window (w1) for the
+  same 2 epochs: 1,611,877 tokens per era for Qwen and 1,549,189 for Gemma (the tokenizers differ).
+  w2 and w3 are randomly downsampled to match, so era is not confounded with data volume or epochs.
 
 **Adaptation.** Each arm adapts its base model to each window separately, and two checks run before
 anything is probed.
@@ -179,38 +187,42 @@ anything is probed.
   no instruction tuning, chat tuning or full fine-tuning.
 - **Adapter audit.** Lists adapted tensors and parameter counts by group (attention, dense MLP,
   router, experts, vision). The run fails unless Gemma-EX adapts more than zero expert tensors with
-  nonzero gradients and no arm adapts vision tensors.
+  nonzero gradients and no arm adapts vision tensors. All 9 adapters passed.
 - **Perplexity gate.** Each adapter must lower held-out perplexity on its own window. A failing
   adapter is checked for bugs and rerun once with the same settings. If it still fails, it is probed
   anyway and the failure is reported. Epochs, budget and windows never change after training starts.
+  All 9 adapters passed (see [Results](#results)).
 
 <details>
 <summary>Training settings</summary>
 
 | Setting | Value |
 |:--|:--|
-| LoRA | r = 16, α = 32, dropout 0.0 |
-| Optimizer | AdamW, learning rate 2e-4 |
+| LoRA | r = 16, α = 32, dropout 0.0; `all-linear` on the text model; Gemma-EX adds `experts.gate_up_proj` and `experts.down_proj` |
+| Optimizer | AdamW, learning rate 2e-4, weight decay 0, 3% linear warmup then cosine decay to 0, gradient clipping at 1.0 |
 | Precision | bf16 |
-| Block length | 2048 tokens |
-| Data per adapter | 2 epochs over the equal-token budget (189–196 optimizer steps of 16,384 tokens) |
+| Batch | 2048-token blocks, micro-batch 1 with 8 accumulation steps: 16,384 tokens per optimizer step |
+| Tokens per era | Qwen 1,611,877 (787 blocks); Gemma 1,549,189 (756 blocks) |
+| Data per adapter | 2 epochs over the budget: 196 optimizer steps (Qwen) or 189 (Gemma) |
 | Seed | 42 |
-| Compute | One H100 or H200 GPU per 1-hour job on Northeastern's Explorer cluster, resumed from checkpoints |
+| Code | All 9 adapters trained at commit `242f148` |
+| Compute | About 6.9 GPU-hours for all 9 adapters (optimizer steps plus model loading), one H100 80 GB or H200 GPU per 1-hour job on Northeastern's Explorer cluster, resumed from checkpoints (12 attempts); peak memory 59.9–67.6 GB ([training summary](results/tables/training_summary.md)) |
 
 </details>
 
 **Evaluation.** All 11 variants answer the same frozen question battery in the same format, and
 three measures score the answers.
 
-- **Battery.** About 19 probes cover eligibility, timing and age, cardiovascular prevention,
-  contraindications, dosing and patient vignettes. Each has an original wording and at least one
-  paraphrase.
+- **Battery.** 19 probes in 6 dimensions: eligibility, timing and age, cardiovascular prevention,
+  contraindications, dosing and route, and patient vignettes. Each probe has an original wording and
+  one or two paraphrases, 43 wordings in all.
 - **Prompt format.** Completion-style prompts with a neutral, non-HRT format primer and no chat
   template, so base models and adapters are queried the same way.
-- **Decoding.** Sampled decoding with 3 seeds gives about 130 answers per variant and about 1,400 in
-  total. One greedy pass is kept as a descriptive comparison.
-- **Frozen in advance.** The battery, seeds and decoding settings are frozen before any adapter is
-  probed.
+- **Decoding.** Sampled decoding (temperature 0.7, top-p 0.9) with 3 seeds gives 129 answers per
+  variant and 1,419 in total. One greedy pass (43 answers per variant) is kept as a descriptive
+  comparison.
+- **Frozen in advance.** The battery, seeds and decoding settings are frozen and git-tagged before
+  any adapter is probed. The battery is currently a draft under review.
 - **Scoring.** M1 markers (primary), M2 rubric and M3 embeddings, then probe-clustered statistics, as
   set out in [Measures and analysis](#measures-and-analysis).
 
@@ -250,8 +262,9 @@ three measures score the answers.
 - **Directional expectations,** stated in advance but not tested one-sided: individualization up,
   timing-window language up after w1, WHI mentions down, prevention advice down.
 
-All of the above is written into a pre-registration that is committed and git-tagged before any
-trained adapter is probed. A null result from a verified recipe counts as a finding.
+All of the above is written into a [pre-registration](docs/preregistration.md) (draft under review)
+that is committed and git-tagged before any trained adapter is probed. A null result from a verified
+recipe counts as a finding.
 
 ### Scope and limitations
 
@@ -260,37 +273,106 @@ trained adapter is probed. A null result from a verified recipe counts as a find
   2022 statements before the freeze.
 - The base models may already have seen recent literature in pretraining. Adaptation steers a model;
   it does not replace what the model already knows.
+- Qwen3.5-27B is the post-trained release, because no 27B base model is published; Gemma-4-26B-A4B is
+  a base model. Qwen-versus-Gemma contrasts therefore mix base and post-trained models; within-model
+  era contrasts are unaffected.
+- w1 is below the planned token minimum, part of it comes from a broader query, and its held-out set
+  is small (16 articles). See [Corpus](#corpus).
 - Out of scope: retrieval-augmented generation, instruction or chat tuning, and full fine-tuning.
 
 ## Corpus
 
 **Inclusion.** HRT or menopausal hormone therapy terms in the title, abstract, keywords or MeSH
-headings, English only. Each article belongs to exactly one window, by its first publication date.
+headings, English only, open-access full text. Each article belongs to exactly one window, by its
+first publication date.
 
-**Exclusions.** Corrections, errata and retraction notices; texts under 800 characters; duplicates
-(by PMCID, with DOI as fallback).
+**Exclusions.** Corrections, errata, retraction and other notices; meeting abstracts; non-English
+texts; texts under 800 characters; duplicates (by PMCID, with DOI as fallback, and duplicate titles);
+and articles the relevance screen labels off-topic.
 
-**Available volume.** Europe PMC hit counts per window, retrieved 2026-11-04:
+**Relevance screen.** The HRT query also returns many articles that are not about menopausal hormone
+therapy, mainly hormone replacement outside menopause (testosterone, thyroid, IVF "HRT cycles") and
+cancer endocrine therapy. Every harvested article was screened by LLM screener agents on its title,
+abstract and keywords only, blind to the publication date, journal, identifiers and license, following
+[`docs/relevance_screen.md`](docs/relevance_screen.md). A reproducible 10% double screen gives 95.1%
+agreement and Cohen's κ = 0.913 on the three-way label (n = 471).
 
-| Window | HRT query, all records | HRT query, open-access full text | Fallback menopause query, open-access full text |
-|:--|--:|--:|--:|
-| w1 · 2011–2015 | 5,159 | **676** | 3,305 |
-| w2 · 2016–2020 | 4,703 | **1,194** | 6,375 |
-| w3 · 2021–2026 | 6,057 | **2,902** | 15,067 |
+| Window | Harvested | Relevant | Borderline | Off-topic | **Kept** | Est. tokens | Train / held-out |
+|:--|--:|--:|--:|--:|--:|--:|--:|
+| w1 · 2011–2015 | 674 | 142 | 176 | 356 | **315** | 1,912,103 | 299 / 16 |
+| w2 · 2016–2020 | 1,183 | 192 | 260 | 731 | **446** | 2,836,940 | 424 / 22 |
+| w3 · 2021–2026 | 2,858 | 546 | 651 | 1,661 | **1,152** | 8,647,904 | 1,094 / 58 |
+| **Total** | 4,715 | 880 | 1,087 | 2,748 | **1,913** | 13,396,948 | 1,817 / 96 |
 
-<sub>Source: [`data/manifests/counts.csv`](data/manifests/counts.csv), which also holds the exact
-query strings. These are **pre-filter hit counts**, taken before relevance filtering and
-exclusions, so the final sets will be smaller. Training uses open-access full text only.</sub>
+<sub>Source: [T1](results/tables/T1_collection_estimate.md), which also lists exclusions by reason,
+licenses, journals and per-window agreement. Kept = labelled relevant or borderline and passing the
+exclusion rules. Est. tokens = cleaned characters ÷ 4, a planning estimate; the training budget uses
+tokenizer counts. Per-article manifests, labels and the double-screen pairs are in
+[`data/manifests/`](data/manifests/); hit counts and exact query strings are in
+[`counts.csv`](data/manifests/counts.csv).</sub>
 
-A minimum of 2 million training tokens in the smallest window is set in advance. If filtering leaves
-less, the study switches to the broader menopause query in the last column before any training. That
-choice depends only on counts, never on results. Final document and token counts per window will be
-reported in table T1.
+**Token budget and the w1 shortfall.** The plan set a minimum of 2 million training tokens for the
+smallest window and a pre-stated top-up rule for w1: at least 400 kept articles and 2 million
+estimated tokens. After the screen, w1 fell short (315 articles, about 1.91 million estimated
+tokens). The top-up from the broader menopause query was applied, but the pool ran out after one round
+(5 new articles, 3 of them kept). Before training, the owner accepted w1 at this size, and the
+equal-token budget follows w1: 1,611,877 Qwen tokens and 1,549,189 Gemma tokens per era. Part of w1
+(1.0% of its articles) therefore comes from a broader query than w2 and w3. This and the other
+deviations from the original plan are listed in the
+[pre-registration](docs/preregistration.md#2-design-fixed).
 
 ## Results
 
 > [!NOTE]
-> No results yet. Training and probing have not started. Everything below is a placeholder.
+> Training and the perplexity check are complete (2026-11-05). Probing has not run, so there are no
+> stance results yet. The headline table (T4) below is a placeholder.
+
+### Manipulation check (T3)
+
+The pre-registered gate requires each adapter to have lower held-out perplexity than its base model
+on its own era. All 9 adapters pass.
+
+| Arm | w1 adapter, w1 text | w2 adapter, w2 text | w3 adapter, w3 text |
+|:--|--:|--:|--:|
+| Qwen | −1.99% [−2.75, −1.29] | −1.50% [−1.91, −1.09] | −2.89% [−3.29, −2.52] |
+| Gemma-AL | −1.50% [−1.78, −1.24] | −1.41% [−1.61, −1.21] | −1.74% [−1.94, −1.54] |
+| Gemma-EX | −1.22% [−1.84, −0.64] | −0.81% [−1.10, −0.51] | −1.08% [−1.32, −0.85] |
+
+<sub>Change in held-out perplexity relative to the base model on the adapter's own era. Brackets: 95%
+paired block-bootstrap confidence interval. Gate: 9 of 9 PASS.</sub>
+
+<p align="center">
+  <img src="results/figures/T3_perplexity_change.png" width="100%" alt="Three heatmaps, one per arm (Qwen, Gemma-AL, Gemma-EX). Rows: adapter trained on w1, w2 or w3; columns: held-out era. Each cell shows the percent change in held-out perplexity against the model's base, with a 95% bootstrap interval; the adapter's own era is outlined. All own-era cells are negative, from −0.81% to −2.89%. Two Gemma-EX cells are positive: the w1 and w2 adapters on w3 text (+0.29%, +0.32%).">
+</p>
+
+- **Size.** The paired block-bootstrap 95% intervals of all 9 gate changes exclude 0. The intervals
+  are descriptive, not pre-registered tests, and likely too narrow, because blocks from the same
+  article are correlated; the pre-registered gate is the point comparison.
+- **Specificity.** In every arm, the w1 and w3 adapters have lower perplexity on their own era than
+  any other adapter of the arm (intervals below 0). On w2 text, the w2 adapter does not separate from
+  the w1 adapter in any arm (differences −0.03% to −0.15%, intervals spanning 0).
+- **Gemma-EX.** Adapting the experts gives smaller held-out gains than Gemma-AL on every era, and the
+  Gemma-EX w1 and w2 adapters make w3 text slightly worse than the base model (+0.29%, +0.32%).
+
+Full era × era matrix, specificity comparisons and the bootstrap method:
+[`T3_perplexity.md`](results/tables/T3_perplexity.md). Training curves and
+runs: [W&B report](https://wandb.ai/muhammadobaidullah98-northeastern-university/MedEra/reports/MedEra-CPT-training-9-adapters-3-arms-3-eras--VmlldzoxODI1ODM2OQ).
+
+<details>
+<summary>Training loss</summary>
+
+<p align="center">
+  <img src="results/figures/training_loss.png" width="100%" alt="Three panels, one per arm (Qwen, Gemma-AL, Gemma-EX), showing training loss per optimizer step for the w1, w2 and w3 adapters over two epochs, with a 9-step moving average and the start of epoch 2 marked.">
+</p>
+
+<sub>Training loss per optimizer step; solid lines are a 9-step moving average. Losses at the start
+and end of each run, attempts, peak memory and GPU-hours per adapter are in the
+[training summary](results/tables/training_summary.md). Training loss compares within a model only;
+the manipulation check is held-out perplexity (T3), not training loss.</sub>
+
+</details>
+
+### Headline: individualization-marker rate (T4)
 
 | Arm | base | w1 | w2 | w3 | Era trend |
 |:--|--:|--:|--:|--:|:--|
@@ -298,93 +380,168 @@ reported in table T1.
 | Gemma-AL | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
 | Gemma-EX | shares Gemma base | _pending_ | _pending_ | _pending_ | _pending_ |
 
-<sub>Headline table (T4): individualization-marker rate by arm and window, with the two-sided trend
-test.</sub>
+<sub>Individualization-marker rate by arm and window, with the two-sided trend test. Filled in after
+probing.</sub>
 
-**Planned outputs**
+### Outputs
 
-- **Tables:** T1 corpus by window · T2 adapter audit · T3 perplexity check · T4 headline marker rates
-  · T5 interactions (Gemma-EX vs Gemma-AL; Qwen vs each Gemma arm) · T6 rubric ΔS per dimension · T7
-  embedding T per encoder, raw and length-adjusted · T8 agreement between measures and length
-  sensitivity
-- **Figures:** F1 pipeline · F2 marker trend w1 → w3 per arm · F3 embedding PCA by probe and by era ·
-  F4 rubric dimensions by era · F5 side-by-side w1 and w3 answers for the same probe and seed
+| Output | Status |
+|:--|:--|
+| T1 corpus by window | [available](results/tables/T1_collection_estimate.md) |
+| T2 adapter audit | [available](results/tables/T2_adapter_audit.md) |
+| T3 perplexity check | [available](results/tables/T3_perplexity.md), with [heatmap](results/figures/T3_perplexity_change.png) |
+| Training summary | [available](results/tables/training_summary.md), with [loss curves](results/figures/training_loss.png) |
+| T4 headline marker rates | after probing |
+| T5 interactions (Gemma-EX vs Gemma-AL; Qwen vs each Gemma arm) | after probing |
+| T6 rubric ΔS per dimension | after probing |
+| T7 embedding T per encoder, raw and length-adjusted | after probing |
+| T8 agreement between measures and length sensitivity | after probing |
+| Figures F1 pipeline · F2 marker trend w1 → w3 per arm · F3 embedding PCA by probe and by era · F4 rubric dimensions by era · F5 side-by-side w1 and w3 answers for the same probe and seed | planned |
 
 ## Documents
 
-All planned; each will be linked here once it is published.
-
-- **Pre-registration** (`docs/preregistration.md`, draft under review): hypotheses, primary measure and
-  test, test family, α, equivalence bound and perplexity gate. Git-tagged before probing.
-- **Report** (`docs/report.md`): methods, results and limitations.
-- **Slides** (`docs/slides/`): final presentation.
-- **Model card** (`MODEL_CARD.md`): intended use (research only), training data, limits and safety.
+- **[Pre-registration](docs/preregistration.md)** (draft under review): hypotheses, primary measure
+  and test, test family, α, equivalence bound, perplexity gate and the deviations from the original
+  plan. Git-tagged `prereg-v1` before probing.
+- **[Relevance screen protocol](docs/relevance_screen.md)**: rubric, blinding, double screen and
+  screener instructions.
+- **[Model card](MODEL_CARD.md)** (draft): the 9 era adapters, intended use (research only), training
+  data, evaluation so far, limitations and risks.
+- **[Results tables](results/tables/)**: T1, T2, T3 and the training summary so far.
+- **[W&B report](https://wandb.ai/muhammadobaidullah98-northeastern-university/MedEra/reports/MedEra-CPT-training-9-adapters-3-arms-3-eras--VmlldzoxODI1ODM2OQ)**:
+  training runs for the 9 adapters.
+- Planned: report (`docs/report.md`) and slides (`docs/slides/`).
 
 ## Reproduce
 
-> [!NOTE]
-> Planned. The pipeline is not built yet, so these steps describe the intended order, and script
-> names may change.
+**Requirements.** Python 3.11 with the pinned packages in `requirements.txt` (torch 2.6.0, CUDA 12.4
+wheels), and one 80 GB GPU (H100 or H200) per job for training and evaluation. Gemma-4 is gated on
+Hugging Face, so its license must be accepted first. Collection, corpus building, the result tables
+and figures, and the test suite run on a CPU; the figures need the `report` extra (matplotlib).
 
-**Requirements (planned):** Python with pinned versions in `requirements.txt`, and one H200-class GPU
-per job for training and probing. Core training plus probing is estimated at 30–40 H200-hours. The
-notebooks run on a CPU from saved results, so every table and figure can be rebuilt without a GPU.
+**Measured GPU cost.** Training the 9 adapters took about 6.9 GPU-hours (optimizer steps plus model
+loading, over 12 one-hour attempts; queueing and checkpoint saves not counted), and the perplexity
+check took about 41 minutes of forward passes over its 33 cells (11 variants × 3 held-out eras), plus
+model loading.
 
-1. **Environment.** Install `requirements.txt`; on Explorer, run `hpc/setup_env.sh`.
-2. **Collect.** `python -m medera.collect harvest --window w1 --query core --resume`, then w2 and w3,
-   then `python -m medera.collect merge`. Raw XML goes to
-   `data/raw/` and one manifest per window to `data/manifests/`; the merge step removes duplicates.
-3. **Build.** Clean, split by window, apply the equal-token budget and pack into 2048-token blocks.
-4. **Train and audit** the 9 adapters on Explorer with the Slurm jobs in `hpc/`, then run the
-   perplexity gate: `bash hpc/dispatch.sh --phase ppl` (one `hpc/eval.slurm` job per variant), then
-   `python -m medera.measure.perplexity --table` for T3.
-5. **Probe** all 11 variants with the frozen question battery: `bash hpc/dispatch.sh --phase probe`.
-   Probing a trained adapter is refused until `configs/probes.yaml` is frozen and the pre-registration
-   tag exists.
-6. **Measure** with markers (`python -m medera.measure.markers`), rubric and embeddings, then run the
-   statistics.
-7. **Rebuild** every table and figure from `results/` with the notebooks in `notebooks/`.
+The Slurm scripts in `hpc/` are written for Northeastern's Explorer cluster (account, partitions and
+`/scratch` paths); on another cluster, adapt their `#SBATCH` lines and `hpc/env.sh`.
+
+1. **Environment.**
+
+   ```bash
+   pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+   pip install -r requirements.txt && pip install -e ".[report]"   # report extra: matplotlib for the figures
+   python -m pytest -q                                              # CPU test suite
+   ```
+
+   On Explorer, `hpc/setup_env.sh` builds the same environment and `hpc/download_models.sh` fetches
+   the pinned checkpoints (compute nodes are offline).
+
+2. **Collect** from Europe PMC (CPU, needs internet).
+
+   ```bash
+   python -m medera.collect count                                      # hit counts -> counts.csv
+   python -m medera.collect harvest --window w1 --query core --resume  # then w2 and w3
+   python -m medera.collect merge                                      # dedupe -> hrt_all.csv
+   ```
+
+3. **Screen.** `python -m medera.collect screen-export --window <w>` writes blinded batches,
+   `python -m medera.collect screen-import` validates the labels and writes
+   `data/manifests/relevance_labels.csv`, and `python -m medera.collect screen-summary` checks the w1
+   top-up rule. The committed labels and manifests fix which articles are kept, so the screen need
+   not be repeated.
+
+4. **Build** the training and held-out blocks (CPU; on Explorer, `sbatch hpc/build_data.slurm data`).
+
+   ```bash
+   python -m medera.preprocess text                        # clean, filter, split
+   python -m medera.preprocess pack --model qwen35_27b      # equal-token budget, 2048-token blocks
+   python -m medera.preprocess pack --model gemma4_26b_a4b
+   ```
+
+5. **Train and audit** the 9 adapters (GPU).
+
+   ```bash
+   python -m medera.train.lora_cpt --arm gemma_ex --window w1             # one adapter; the audit runs at the end
+   bash hpc/dispatch.sh                                                   # Explorer login node: all 9, 1-h resumable jobs
+   bash hpc/dispatch_status.sh                                            # progress table
+   python -m medera.train.audit_adapter runs/results/adapter_audit/*.json # re-check saved audits
+   python -m medera.train.report                                          # CPU: T2, training summary, loss figure
+   ```
+
+6. **Perplexity gate** (GPU, then CPU).
+
+   ```bash
+   bash hpc/dispatch.sh --phase ppl                         # one hpc/eval.slurm job per variant
+   python -m medera.measure.perplexity --table --figure     # CPU: T3 tables, CIs and heatmap from results/scores/perplexity/
+   ```
+
+7. **Probe** all 11 variants with the frozen battery (GPU).
+
+   ```bash
+   python -m medera.probe.generate --check-gate --variant qwen_w1   # CPU: is probing allowed yet?
+   bash hpc/dispatch.sh --phase probe
+   ```
+
+   Probing a trained adapter is refused until `configs/probes.yaml` has `status: frozen`, the
+   pre-registration is approved, and the `prereg-v1` tag exists and matches both files.
+
+8. **Measure.** `python -m medera.measure.markers` scores M1 into `results/scores/m1_markers.csv`.
+   The rubric (M2), embeddings (M3), statistics and the CPU notebooks that rebuild every table and
+   figure are not built yet.
+
+After each cluster job, `bash hpc/sync_back.sh` on the laptop mirrors `runs/` and the evaluation
+outputs in `results/` from Explorer. Then run `python -m medera.publish`, which keeps raw copies in
+`runs/results/scores_raw/` and strips the Slurm job, partition and node fields from the JSON under
+`results/scores/` before anything there is committed.
 
 ## Repository structure
 
 ```text
-configs/          corpus queries, model revisions, training arms, probe battery, rubric judge
+configs/            corpus queries and filters, pinned model revisions, training arms, probe battery
 data/
-  manifests/      paper IDs, dates, licenses and hit counts (committed)
-  raw/            article XML (local only, never committed)
-  processed/      cleaned, windowed text (local only, never committed)
-docs/             pre-registration, report, slides
-hpc/              environment setup and Slurm jobs for the Explorer cluster
-notebooks/        analysis notebooks; CPU only, read from results/
+  manifests/        paper IDs, dates, licenses, hit counts, relevance labels and agreement (committed)
+  raw/              article XML (local only, never committed)
+  processed/        cleaned text and packed blocks (local only, never committed)
+docs/               pre-registration, relevance screen protocol, figures
+hpc/                environment setup, Slurm jobs (build, smoke, train, eval), dispatcher, sync
+notebooks/          analysis notebooks (planned; CPU only, read from results/)
 results/
-  adapter_audit/  adapted tensors and parameter counts per arm
-  answers/        probe answers for every variant
-  scores/         marker, rubric and embedding scores
-  tables/         T1–T8
-  figures/        F1–F5
-scripts/          entry points: collect, build, train, probe, measure, report
+  tables/           T1, T2, T3, training summary
+  adapter_audit/    adapter audit report per adapter (9)
+  scores/           perplexity cells per variant and era
+  answers/          probe answers (after probing)
+  figures/          T3 perplexity-change heatmap, training loss
+scripts/            check_publish.sh (pre-push safety scan)
 src/medera/
-  collect/        Europe PMC client, harvest, merge and dedup
-  preprocess/     JATS to text, cleaning, window split, token budget
-  train/          LoRA continued pretraining and adapter audit
-  probe/          answer generation for the question battery
-  measure/        markers, rubric, embeddings, perplexity
-  stats/          trend tests, clustering, permutation, bootstrap
-tests/            preprocessing, markers, statistics, adapter audit
+  collect/          Europe PMC client, harvest, merge and dedup, blinded relevance screen
+  preprocess/       JATS to text, filters, split, token budget, packing
+  train/            LoRA continued pretraining, target selection, adapter audit, model download,
+                    training report (T2, training summary, loss figure)
+  measure/          perplexity, M1 markers
+  probe/            battery, pre-registration gate, answer generation
+  stats/            paired block bootstrap; trend tests and permutation (planned)
+  figures.py        shared style for the result figures
+  publish.py        strips cluster job and node fields from synced results
+tests/              CPU tests: collection, preprocessing, LoRA recipes on tiny Qwen3.5 and Gemma-4 models,
+                    perplexity, probing gate, markers, dispatcher
+MODEL_CARD.md       model card for the era adapters (draft)
 ```
 
 ## Roadmap
 
 - [x] Repository skeleton
 - [x] Europe PMC hit counts per window (2026-11-04)
-- [ ] Corpus harvest and build, one window at a time
-- [ ] Gemma-EX smoke test: the adapter reaches the expert weights (go/no-go)
-- [ ] Probe battery drafted and checked against NAMS 2017 and 2022
-- [ ] Pre-registration frozen and git-tagged
-- [ ] Train and audit 9 adapters; perplexity gate
+- [x] Corpus harvest, blinded relevance screen and build (2026-11-04)
+- [x] Gemma-EX smoke test: the adapter reaches the expert weights (go)
+- [x] Train and audit 9 adapters (2026-11-05)
+- [x] Perplexity gate: 9 of 9 pass (2026-11-05)
+- [ ] Probe battery checked against NAMS 2017 and 2022 (drafted: 19 probes, 43 wordings; under review)
+- [ ] Pre-registration frozen and git-tagged `prereg-v1` (draft under review)
 - [ ] Probe 11 variants; markers and embeddings
 - [ ] Rubric judging, statistics and marker validation
-- [ ] Report, model card and figures
+- [ ] Report and figures; final model card (draft written)
 - [ ] Final presentation
 
 ## Citation
