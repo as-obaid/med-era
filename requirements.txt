@@ -7,6 +7,7 @@ accelerate==1.14.0
 bitsandbytes==0.49.2
 flash-linear-attention==0.5.1   # Triton kernels for Qwen3.5 linear attention (installed without the [cuda] extra, which wants torch>=2.7)
 fla-core==0.5.1
+setuptools==80.9.0              # triton imports it at import time (backends/*/driver.py -> runtime/build.py); uv venvs have none
 einops==0.8.1
 huggingface_hub==1.33.0
 tokenizers==0.22.2
