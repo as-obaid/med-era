@@ -314,8 +314,8 @@ test.</sub>
 
 All planned; each will be linked here once it is published.
 
-- **Pre-registration** (`docs/preregistration.md`): hypotheses, primary measure and test, test
-  family, α, equivalence bound and perplexity gate. Git-tagged before probing.
+- **Pre-registration** (`docs/preregistration.md`, draft under review): hypotheses, primary measure and
+  test, test family, α, equivalence bound and perplexity gate. Git-tagged before probing.
 - **Report** (`docs/report.md`): methods, results and limitations.
 - **Slides** (`docs/slides/`): final presentation.
 - **Model card** (`MODEL_CARD.md`): intended use (research only), training data, limits and safety.
@@ -336,9 +336,13 @@ notebooks run on a CPU from saved results, so every table and figure can be rebu
    `data/raw/` and one manifest per window to `data/manifests/`; the merge step removes duplicates.
 3. **Build.** Clean, split by window, apply the equal-token budget and pack into 2048-token blocks.
 4. **Train and audit** the 9 adapters on Explorer with the Slurm jobs in `hpc/`, then run the
-   perplexity gate.
-5. **Probe** all 11 variants with the frozen question battery.
-6. **Measure** with markers, rubric and embeddings, then run the statistics.
+   perplexity gate: `bash hpc/dispatch.sh --phase ppl` (one `hpc/eval.slurm` job per variant), then
+   `python -m medera.measure.perplexity --table` for T3.
+5. **Probe** all 11 variants with the frozen question battery: `bash hpc/dispatch.sh --phase probe`.
+   Probing a trained adapter is refused until `configs/probes.yaml` is frozen and the pre-registration
+   tag exists.
+6. **Measure** with markers (`python -m medera.measure.markers`), rubric and embeddings, then run the
+   statistics.
 7. **Rebuild** every table and figure from `results/` with the notebooks in `notebooks/`.
 
 ## Repository structure

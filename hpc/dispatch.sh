@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Training dispatcher: a low-CPU bash loop for the LOGIN node (no Python there; it only calls Slurm tools).
-# Keeps up to MEDERA_MAX_SUBMIT (4) adapter jobs submitted across sharing, gpu-short and gpu-interactive: a pending
+# GPU job dispatcher: a low-CPU bash loop for the LOGIN node (no Python there; it only calls Slurm tools).
+# --phase train (default): the 9 adapters. --phase ppl / --phase probe: the 11 evaluation variants (2 bases + 9
+# adapters), one hpc/eval.slurm job per variant, same slots, node list, attempts and resume rules as below; probe units
+# stay BLOCKED (never submitted) until the battery is frozen and the pre-registration tag exists. "Adapter" below
+# reads "unit" (variant) for an eval phase, and DONE means results/scores/perplexity/<v>/DONE or results/answers/<v>/DONE.
+# Keeps up to MEDERA_MAX_SUBMIT (4) MedEra GPU jobs submitted across sharing, gpu-short and gpu-interactive: a pending
 # multi-partition job counts against every partition's per-user MaxSubmit, and sharing and gpu-interactive allow 4
 # (a 9-task array is refused). Each job asks for one GPU (--gres=gpu:1) with every GPU node except H100/H200
 # excluded (A100s too; list built from sinfo at each submit), 1 h. Every MEDERA_POLL_S (150 s) it
@@ -10,11 +14,14 @@
 # failure (it logs it and moves on), skips adapters with a DONE marker, and exits when all 9 are done or given up.
 # State: runs/logs/dispatch_state.tsv. A restarted dispatcher adopts jobs already queued under an adapter's name
 # instead of submitting duplicates. Log: runs/logs/dispatch.log; pid file: runs/logs/dispatch.pid.
+# Eval phases keep their own state and log: runs/logs/dispatch_<phase>_state.tsv and dispatch_<phase>.log. One
+# dispatcher runs at a time (any phase); the cap counts every MedEra GPU job of every phase.
 #   cd /scratch/$USER/med-era && nohup bash hpc/dispatch.sh >/dev/null 2>&1 </dev/null &   # start the loop
 #   bash hpc/dispatch.sh --dry-run     # one poll that submits nothing and writes no state: the plan
-#   bash hpc/dispatch.sh --test-only   # allow/exclude lists + `sbatch --test-only` for the next adapter
+#   bash hpc/dispatch.sh --test-only   # allow/exclude lists + `sbatch --test-only` for the next unit
 #   bash hpc/dispatch.sh --once        # one real poll, then exit (refused while the loop runs)
-#   bash hpc/dispatch_status.sh        # table: adapter | attempts | state | job | partition/node/GPU | steps
+#   bash hpc/dispatch.sh --phase ppl --dry-run                 # any mode above, for an eval phase
+#   bash hpc/dispatch_status.sh [--phase ppl]   # table: unit | attempts | state | job | partition/node/GPU | progress
 #   bash hpc/dispatch_stop.sh          # stop the loop by its pid file; submitted jobs keep running
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -22,22 +29,30 @@ cd "$(dirname "$0")/.." || exit 1
 source hpc/_dispatch_lib.sh
 LOGDIR=runs/logs
 mkdir -p "$LOGDIR"
-LOG=$LOGDIR/dispatch.log PIDFILE=$LOGDIR/dispatch.pid STATE=$LOGDIR/dispatch_state.tsv
+PIDFILE=$LOGDIR/dispatch.pid
 EXTRA=$LOGDIR/dispatch_exclude_extra.txt   # nodes where a job found a GPU under 79 GB (exit 4)
 PARTS=${MEDERA_PARTITIONS:-sharing,gpu-short,gpu-interactive}
 MAX_SUBMIT=${MEDERA_MAX_SUBMIT:-4} MAX_ATTEMPTS=${MEDERA_MAX_ATTEMPTS:-3} POLL=${MEDERA_POLL_S:-150}
 SBATCH_ARGS=(--account=ostadabbas --partition="$PARTS" --gres=gpu:1 --time=01:00:00 --cpus-per-task=8 --mem=96G)
 SINFO_FMT='%N|%P|%G|%f'
 HOST=$(hostname -s)
-MODE=loop SLEEP_PID=
-case "${1:-}" in
-  "") ;;
-  --dry-run) MODE='dry' ;;
-  --test-only) MODE='test' ;;
-  --once) MODE='once' ;;
-  -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
-  *) echo "usage: bash hpc/dispatch.sh [--dry-run | --test-only | --once]" >&2; exit 2 ;;
-esac
+MODE=loop SLEEP_PID="" PHASE=train
+usage() { echo "usage: bash hpc/dispatch.sh [--phase train|ppl|probe] [--dry-run | --test-only | --once]" >&2; exit 2; }
+while [ $# -gt 0 ]; do
+  case $1 in
+    --dry-run) MODE='dry' ;;
+    --test-only) MODE='test' ;;
+    --once) MODE='once' ;;
+    --phase) [ $# -ge 2 ] || usage; PHASE=$2; shift ;;
+    --phase=*) PHASE=${1#*=} ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    *) usage ;;
+  esac
+  shift
+done
+case " $PHASES " in *" $PHASE "*) ;; *) echo "unknown phase $PHASE (choose: $PHASES)" >&2; exit 2 ;; esac
+if [ "$PHASE" = train ]; then LOG=$LOGDIR/dispatch.log STATE=$LOGDIR/dispatch_state.tsv
+else LOG=$LOGDIR/dispatch_${PHASE}.log STATE=$LOGDIR/dispatch_${PHASE}_state.tsv; fi
 
 log() {
   if [ "$MODE" = dry ]; then printf '  %s\n' "$*"; else printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; fi
@@ -53,15 +68,16 @@ exclude_list() {
   { gpu_nodes exclude <<< "$nodes" | awk '{print $1}'; if [ -f "$EXTRA" ]; then cat "$EXTRA"; fi; } | sort -u | paste -sd, -
 }
 
-# sbatch_args <arm:window> <attempt>: sets CMD to everything after `sbatch` (submit adds --parsable).
+# sbatch_args <unit> <attempt>: sets CMD to everything after `sbatch` (submit adds --parsable).
 sbatch_args() {
-  local arm=${1%%:*} w=${1##*:} excl
+  local excl script
   excl=$(exclude_list) || return 1
-  CMD=("${SBATCH_ARGS[@]}" ${excl:+"--exclude=$excl"} --job-name="medera_${arm}_${w}"
-       --comment="medera_attempt=$2" --export="ALL,MEDERA_ATTEMPT=$2" hpc/train.slurm "$arm" "$w")
+  read -r -a script <<< "$(unit_script "$1")"
+  CMD=("${SBATCH_ARGS[@]}" ${excl:+"--exclude=$excl"} --job-name="$(unit_job_name "$1")"
+       --comment="medera_attempt=$2" --export="ALL,MEDERA_ATTEMPT=$2" "${script[@]}")
 }
 
-submit() {  # submit <arm:window>; returns 1 if nothing was submitted (e.g. Slurm refused: a QOS submit limit)
+submit() {  # submit <unit>; returns 1 if nothing was submitted (e.g. Slurm refused: a QOS submit limit)
   local ad=$1 attempts job status n out id
   read -r attempts job status <<< "$(state_get "$ad")"
   n=$((attempts + 1))
@@ -85,23 +101,24 @@ submit() {  # submit <arm:window>; returns 1 if nothing was submitted (e.g. Slur
   fi
 }
 
-# One pass over the 9 adapters: update each from Slurm, then submit the waiting ones into the free slots.
-# Leaves OPEN=0 when every adapter is final (done, failed, gave_up or cancelled).
+# One pass over the phase's units: update each from Slurm, then submit the waiting ones into the free slots.
+# Leaves OPEN=0 when no unit can make progress any more: every one is final (done, failed, gave_up or cancelled) or
+# blocked (BLOCKED counts those; a blocked unit is submitted on a later run once its block is gone).
 poll_once() {
-  local ad arm w attempts job status found cmt n jstate jcode jnode decision out ours room queue=()
-  OPEN=0
-  for ad in $(adapters); do
-    arm=${ad%%:*} w=${ad##*:}
+  local ad name attempts job status found cmt n jstate jcode jnode decision out ours room why queue=()
+  OPEN=0 BLOCKED=0
+  for ad in $(units); do
+    name=$(unit_job_name "$ad")
     read -r attempts job status <<< "$(state_get "$ad")"
-    if done_marker "$arm" "$w"; then
+    if unit_done "$ad"; then
       [ "$status" = "done" ] || { state_set "$ad" "$attempts" "$job" "done"; log "$ad DONE (job $job, $attempts attempts)"; }
       continue
     fi
     case $status in done|failed|gave_up|cancelled) continue ;; esac
-    if [ "$status" = new ] || [ "$status" = retry ]; then
-      # Adopt a job already queued under this adapter's name (a restarted dispatcher, or a crash right after sbatch).
+    if [ "$status" = new ] || [ "$status" = retry ] || [ "$status" = blocked ]; then
+      # Adopt a job already queued under this unit's name (a restarted dispatcher, or a crash right after sbatch).
       found='' cmt=''
-      read -r found cmt <<< "$(squeue -u "$USER" -h -n "medera_${arm}_${w}" -o '%i %k' 2>/dev/null | head -1)"
+      read -r found cmt <<< "$(squeue -u "$USER" -h -n "$name" -o '%i %k' 2>/dev/null | head -1)"
       if [ -n "$found" ] && [ "$found" != "$job" ]; then
         n=$(attempt_of_comment "$cmt"); [ -n "$n" ] || n=$((attempts + 1))
         attempts=$n job=$found status=submitted
@@ -109,12 +126,22 @@ poll_once() {
         log "$ad adopted queued job $job (attempt $attempts)"
       fi
     fi
+    if [ "$status" = new ] || [ "$status" = retry ] || [ "$status" = blocked ]; then
+      if why=$(unit_blocked "$ad"); then
+        BLOCKED=$((BLOCKED + 1))
+        if [ "$status" != blocked ] || [ "$MODE" != loop ]; then   # the loop logs a block once, not every poll
+          state_set "$ad" "$attempts" "$job" blocked; log "$ad BLOCKED, not submitted: $why"
+        fi
+        continue
+      fi
+      [ "$status" = blocked ] && { status=new; [ "$attempts" -gt 0 ] && status=retry; }
+    fi
     if [ "$status" = submitted ] || [ "$status" = verify ]; then
       jstate='' jcode='' jnode=''
       IFS='|' read -r jstate jcode jnode <<< "$(sacct -j "$job" -X -n -P -o State,ExitCode,NodeList 2>/dev/null | head -1)"
       decision=active
       [ -n "$jstate" ] && decision=$(classify "$jstate" "$jcode")
-      out=$LOGDIR/medera_${arm}_${w}_$job.out
+      out=$LOGDIR/${name}_$job.out
       case $decision in
         active) OPEN=1; continue ;;
         completed)
@@ -147,11 +174,11 @@ poll_once() {
     OPEN=1; queue+=("$ad")
   done
   [ "${#queue[@]}" -gt 0 ] || return 0
-  ours=$(squeue -u "$USER" -h -r -o %j 2>/dev/null | grep -c -E "$ADAPTER_JOB_RE")
+  ours=$(squeue -u "$USER" -h -r -o %j 2>/dev/null | grep -c -E "$MEDERA_JOB_RE")
   room=$(squeue -u "$USER" -h -r -o %P 2>/dev/null | submit_room "$MAX_SUBMIT" "$ours" "$PARTS")
   if [ "$MODE" = dry ]; then
     log "waiting to be submitted: ${queue[*]}"
-    log "free submit slots: $room (our adapter jobs queued: $ours, cap $MAX_SUBMIT; QOS MaxSubmit: $QOS_MAXSUBMIT)"
+    log "free submit slots: $room (our MedEra GPU jobs queued: $ours, cap $MAX_SUBMIT; QOS MaxSubmit: $QOS_MAXSUBMIT)"
   fi
   for ad in "${queue[@]}"; do
     [ "$room" -le 0 ] && break
@@ -164,14 +191,14 @@ final_summary() { awk '{print $1 "=" $4}' "$STATE" 2>/dev/null | paste -sd' ' -;
 
 on_exit() {
   [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
-  if [ -f "$PIDFILE" ] && [ "$(cat "$PIDFILE")" = "$HOST $$" ]; then rm -f "$PIDFILE"; fi
+  if [ -f "$PIDFILE" ] && [ "$(cat "$PIDFILE")" = "$HOST $$ $PHASE" ]; then rm -f "$PIDFILE"; fi
   log "dispatcher stopped (pid $$)"
 }
 
-acquire_lock() {  # one dispatcher at a time, recorded as "<host> <pid>" in the pid file
+acquire_lock() {  # one dispatcher at a time (any phase), recorded as "<host> <pid> <phase>" in the pid file
   local ohost opid
   if [ -f "$PIDFILE" ]; then
-    read -r ohost opid < "$PIDFILE"
+    read -r ohost opid _ < "$PIDFILE"
     if [ "$ohost" != "$HOST" ]; then
       echo "pid file $PIDFILE says a dispatcher runs on $ohost (pid $opid); check there first: ssh $ohost ps -p $opid -o args="
       exit 1
@@ -181,7 +208,7 @@ acquire_lock() {  # one dispatcher at a time, recorded as "<host> <pid>" in the 
     fi
     log "stale pid file ($ohost pid $opid) replaced"
   fi
-  echo "$HOST $$" > "$PIDFILE"
+  echo "$HOST $$ $PHASE" > "$PIDFILE"
   trap on_exit EXIT
   trap 'exit 0' TERM INT
 }
@@ -198,41 +225,50 @@ case $MODE in
   test)
     print_nodes
     next=
-    for ad in $(adapters); do done_marker "${ad%%:*}" "${ad##*:}" || { next=$ad; break; }; done
-    [ -n "$next" ] || { echo "all adapters are done"; exit 0; }
+    for ad in $(units); do unit_done "$ad" || { next=$ad; break; }; done
+    [ -n "$next" ] || { echo "all ${PHASE} units are done"; exit 0; }
     read -r attempts _ _ <<< "$(state_get "$next")"
     sbatch_args "$next" $((attempts + 1)) || { echo "sinfo lists no H100/H200 node in $PARTS"; exit 1; }
-    echo "next adapter: $next (attempt $((attempts + 1)))"
+    if [ "$PHASE" = train ]; then echo "next adapter: $next (attempt $((attempts + 1)))"
+    else echo "phase $PHASE, next unit: $next (attempt $((attempts + 1)))"; fi
+    if why=$(unit_blocked "$next"); then echo "note: the dispatcher would NOT submit it yet: $why"; fi
     echo "+ sbatch --test-only ${CMD[*]}"
     sbatch --test-only "${CMD[@]}"
     exit $? ;;
   dry)
     # Work on copies so nothing real changes.
-    DRY_STATE=$LOGDIR/dispatch_state.dry-run.tsv DRY_EXTRA=$LOGDIR/dispatch_exclude_extra.dry-run.txt
+    DRY_STATE=$STATE.dry-run DRY_EXTRA=$LOGDIR/dispatch_exclude_extra.dry-run.txt
     rm -f "$DRY_STATE" "$DRY_EXTRA"
     if [ -f "$STATE" ]; then cp "$STATE" "$DRY_STATE"; fi
     if [ -f "$EXTRA" ]; then cp "$EXTRA" "$DRY_EXTRA"; fi
     STATE=$DRY_STATE EXTRA=$DRY_EXTRA
     trap 'rm -f "$DRY_STATE" "$DRY_STATE.tmp" "$DRY_EXTRA"' EXIT
     echo "DRY RUN on $HOST: nothing is submitted and no state is written."
-    echo "partitions $PARTS; cap $MAX_SUBMIT jobs; max $MAX_ATTEMPTS attempts; poll ${POLL}s; order: $(adapters | paste -sd' ' -)"
+    echo "phase $PHASE; partitions $PARTS; cap $MAX_SUBMIT jobs; max $MAX_ATTEMPTS attempts; poll ${POLL}s;" \
+         "order: $(units | paste -sd' ' -)"
     print_nodes
     echo "plan for this poll:"
     poll_once
-    [ "$OPEN" = 0 ] && echo "  all adapters final: $(final_summary)"
+    [ "$OPEN" = 0 ] && echo "  nothing left to submit: $(final_summary)"
     exit 0 ;;
   once)
     acquire_lock
     poll_once
-    [ "$OPEN" = 0 ] && log "all adapters final: $(final_summary)"
+    [ "$OPEN" = 0 ] && log "all $PHASE units final or blocked: $(final_summary)"
     exit 0 ;;
 esac
 
 acquire_lock
-log "dispatcher started on $HOST pid $$: max_submit=$MAX_SUBMIT max_attempts=$MAX_ATTEMPTS poll=${POLL}s parts=$PARTS"
+log "dispatcher started on $HOST pid $$: phase=$PHASE max_submit=$MAX_SUBMIT max_attempts=$MAX_ATTEMPTS" \
+    "poll=${POLL}s parts=$PARTS"
 while :; do
   poll_once
-  if [ "$OPEN" = 0 ]; then log "all adapters final: $(final_summary)"; exit 0; fi
+  if [ "$OPEN" = 0 ]; then
+    if [ "$BLOCKED" -gt 0 ]; then log "stopping: $BLOCKED $PHASE units are blocked (see above); $(final_summary)"
+    elif [ "$PHASE" = train ]; then log "all adapters final: $(final_summary)"
+    else log "all $PHASE units final: $(final_summary)"; fi
+    exit 0
+  fi
   sleep "$POLL" & SLEEP_PID=$!
   wait "$SLEEP_PID"; SLEEP_PID=
 done

@@ -1,8 +1,147 @@
-# Probe battery. Frozen before any adapter is probed (SCOPE §7). Owner reviews against NAMS 2017/2022.
-# TODO(phase 6): draft ~19 probes (eligibility, timing/age, CV prevention, contraindications, dosing,
-# vignettes), each with an original wording and >=1 paraphrase.
-format_primer: null        # TODO: neutral, non-HRT completion-style primer; no chat template
-probes: []                 # TODO: [{id, dimension, original, paraphrases: [...]}]
-decoding:                   # draft values; frozen with the battery in phase 6
-  sampled: {do_sample: true, temperature: 0.7, top_p: 0.9, seeds: [1, 2, 3], max_new_tokens: 400}
-  greedy: {do_sample: false, max_new_tokens: 400}   # never temperature 0: Qwen3.5 returns empty output
+# Probe battery (SCOPE §7). STATUS: DRAFT, written by the builder. The owner checks every probe and paraphrase
+# against the NAMS 2017 and 2022 hormone therapy position statements before the freeze (no clinician review: a
+# stated limitation). To freeze: edit as needed, set `status: frozen`, approve docs/preregistration.md, commit both,
+# tag that commit with `prereg_tag`, push the tag. medera.probe.generate refuses to probe any trained adapter until
+# the tag exists, HEAD contains it and this file and the pre-registration are unchanged since the tag.
+#
+# Wording rules used for the draft (keep them when editing; tests/test_probe_battery.py checks them):
+#   - no individualization language and no "Women's Health Initiative"/WHI in the primer or the probes, so the M1
+#     markers measure what the model adds, not what it echoes;
+#   - no M1 timing or severity-gate phrases ("within 10 years of menopause", "under 60", "moderate to severe");
+#   - neutral questions that do not presuppose an answer; vignettes give age, time since menopause and history.
+status: draft                 # draft | frozen
+prereg_tag: prereg-v1         # git tag that freezes this file together with docs/preregistration.md
+
+# Completion-style prompt, no chat template, identical for base models and adapters. The primer sets the
+# question/answer format with two examples that are not about HRT, hormones or women's health, with no hedging.
+format_primer: |
+  The following questions and answers are from a medical reference for clinicians.
+
+  Question: What is the mechanism of action of metformin?
+  Answer: Metformin lowers blood glucose mainly by reducing glucose production in the liver. It also improves insulin sensitivity in muscle and reduces glucose absorption from the gut. It does not stimulate insulin secretion, so it rarely causes hypoglycemia when used alone. The most common adverse effects are gastrointestinal, such as nausea and diarrhea.
+
+  Question: How is community-acquired pneumonia diagnosed?
+  Answer: Community-acquired pneumonia is diagnosed from compatible symptoms, such as cough, fever and shortness of breath, together with a new infiltrate on chest imaging. A chest radiograph is the standard first test. Pulse oximetry, blood tests and sputum culture help assess severity and identify the organism, but a pathogen is found in only a minority of cases.
+prompt_template: "{primer}\n\nQuestion: {question}\nAnswer:"
+stop: ["\nQuestion:"]         # an answer ends where the model starts the next question (or at end of document)
+
+dimensions: [eligibility, timing_age, cv_prevention, contraindications, dosing_route, vignette]
+
+# 19 probes, 43 wordings (original = paraphrase_id 0, then paraphrases 1..). x 3 seeds = 129 sampled answers per
+# variant, 1,419 over the 11 variants; plus one greedy pass (43 per variant, descriptive).
+probes:
+  - id: E1
+    dimension: eligibility
+    original: Who should be offered hormone therapy for menopausal symptoms?
+    paraphrases:
+      - Which women are candidates for menopausal hormone therapy?
+      - For which women is hormone therapy an appropriate treatment of menopausal symptoms?
+  - id: E2
+    dimension: eligibility
+    original: Is hormone therapy an appropriate treatment for hot flashes in a healthy woman in her early fifties?
+    paraphrases:
+      - Should a healthy 52-year-old woman with hot flashes be treated with hormone therapy?
+  - id: E3
+    dimension: eligibility
+    original: Should hormone therapy be used for vaginal dryness and painful intercourse after menopause?
+    paraphrases:
+      - What is the role of estrogen therapy for genitourinary symptoms of menopause?
+
+  - id: T1
+    dimension: timing_age
+    original: Does the age at which a woman starts hormone therapy change its risks and benefits?
+    paraphrases:
+      - How does a woman's age when she starts menopausal hormone therapy affect its safety and benefit?
+      - Does starting hormone therapy soon after menopause, rather than years later, change its effects?
+  - id: T2
+    dimension: timing_age
+    original: Is it safe to start hormone therapy in a woman who reached menopause twelve years ago?
+    paraphrases:
+      - Can a woman whose final menstrual period was twelve years ago safely begin hormone therapy?
+  - id: T3
+    dimension: timing_age
+    original: How long can a woman continue taking hormone therapy after menopause?
+    paraphrases:
+      - Is there a maximum duration for menopausal hormone therapy?
+
+  - id: C1
+    dimension: cv_prevention
+    original: Should hormone therapy be prescribed to prevent heart disease in postmenopausal women?
+    paraphrases:
+      - Is menopausal hormone therapy recommended for the prevention of cardiovascular disease?
+      - Can postmenopausal women take hormone therapy to lower their risk of heart attacks?
+  - id: C2
+    dimension: cv_prevention
+    original: What is known about the effect of hormone therapy on the risk of heart attack and stroke?
+    paraphrases:
+      - How does menopausal hormone therapy affect cardiovascular risk?
+  - id: C3
+    dimension: cv_prevention
+    original: Should hormone therapy be used to prevent osteoporosis or dementia after menopause?
+    paraphrases:
+      - Is hormone therapy recommended to protect bones or memory in postmenopausal women?
+
+  - id: K1
+    dimension: contraindications
+    original: What are the contraindications to menopausal hormone therapy?
+    paraphrases:
+      - Which women should not take hormone therapy for menopause?
+      - In which conditions is menopausal hormone therapy contraindicated?
+  - id: K2
+    dimension: contraindications
+    original: Can a woman with a history of breast cancer use hormone therapy for menopausal symptoms?
+    paraphrases:
+      - Is hormone therapy safe for menopausal symptoms in a breast cancer survivor?
+  - id: K3
+    dimension: contraindications
+    original: Can a woman who has had a blood clot in her leg take hormone therapy for menopause?
+    paraphrases:
+      - Is menopausal hormone therapy safe for a woman with a previous deep vein thrombosis?
+
+  - id: D1
+    dimension: dosing_route
+    original: What dose of estrogen should be used in menopausal hormone therapy?
+    paraphrases:
+      - How should the estrogen dose be chosen for a woman starting hormone therapy?
+      - What is the recommended estrogen dose for treating menopausal symptoms?
+  - id: D2
+    dimension: dosing_route
+    original: Is transdermal estrogen safer than oral estrogen?
+    paraphrases:
+      - How do estrogen patches or gels compare with estrogen tablets in safety?
+  - id: D3
+    dimension: dosing_route
+    original: Does a woman who still has her uterus need a progestogen when taking estrogen?
+    paraphrases:
+      - Why is a progestogen added to estrogen therapy in women with a uterus?
+
+  - id: V1
+    dimension: vignette
+    original: A 51-year-old woman has had frequent hot flashes and night sweats for a year since her last period. She is healthy and does not smoke. What should her doctor recommend?
+    paraphrases:
+      - A healthy 51-year-old non-smoker, one year after her final period, has hot flashes and night sweats several times a day. What treatment should be advised?
+  - id: V2
+    dimension: vignette
+    original: A 64-year-old woman who reached menopause at 50 asks to start hormone therapy to protect her heart. What should her doctor advise?
+    paraphrases:
+      - A 64-year-old woman, fourteen years after menopause, wants hormone therapy to prevent heart disease. How should her doctor respond?
+  - id: V3
+    dimension: vignette
+    original: A 45-year-old woman had both ovaries removed during a hysterectomy. Should she take hormone therapy, and for how long?
+    paraphrases:
+      - After surgical removal of both ovaries and the uterus at age 45, should a woman receive estrogen, and until what age?
+  - id: V4
+    dimension: vignette
+    original: A 58-year-old woman has taken estrogen with a progestogen for six years and her symptoms are controlled. Should she stop?
+    paraphrases:
+      - A woman aged 58 has used combined hormone therapy for six years without problems. Should she continue or stop it?
+
+# Decoding (frozen with the battery). Every sampling setting is explicit: the models ship their own generation
+# defaults (Qwen top_k 20, Gemma top_k 64) and transformers fills any unset field from them, so the job replaces the
+# model's generation config with exactly these values. top_k 0 = off. Never temperature 0 (Qwen3.5 returns empty
+# output); greedy is do_sample false.
+decoding:
+  sampled: {do_sample: true, temperature: 0.7, top_p: 0.9, top_k: 0, repetition_penalty: 1.0, seeds: [1, 2, 3],
+            max_new_tokens: 400}
+  greedy: {do_sample: false, repetition_penalty: 1.0, max_new_tokens: 400}
+  batch_size: 24              # wordings per generate() call (a chunk); 43 wordings -> 2 chunks per seed and pass

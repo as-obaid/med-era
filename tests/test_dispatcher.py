@@ -76,6 +76,7 @@ class Cluster:
         for s in SCRIPTS:
             shutil.copy(HPC / s, self.repo / "hpc" / s)
         (self.repo / "hpc" / "train.slurm").write_text("#!/bin/bash\n")
+        (self.repo / "hpc" / "eval.slurm").write_text("#!/bin/bash\n")
         self.db.mkdir()
         (self.db / "sinfo").write_text(SINFO)
         self.bin.mkdir()
@@ -345,3 +346,115 @@ def test_stop_refuses_a_stale_pid_file(cluster):
         assert sleeper.poll() is None                         # an unrelated process is never killed
     finally:
         sleeper.kill()
+
+
+# ------------------------------------------------------------------------------------- eval phases (ppl, probe)
+VARIANTS = ["qwen_base", "gemma_base", "qwen_w1", "gemma_al_w1", "gemma_ex_w1", "qwen_w2", "gemma_al_w2",
+            "gemma_ex_w2", "qwen_w3", "gemma_al_w3", "gemma_ex_w3"]
+
+
+def _train_all(cluster, adapters=ORDER):
+    for ad in adapters:
+        d = cluster.repo / "runs" / "adapters" / ad.replace(":", "_")
+        d.mkdir(parents=True)
+        (d / "adapter_config.json").write_text("{}")
+        (d / "DONE").write_text("{}\n")
+
+
+def _eval_state(cluster, phase):
+    f = cluster.logs / f"dispatch_{phase}_state.tsv"
+    return {r[0]: (int(r[1]), r[2], r[3]) for r in (line.split() for line in f.read_text().splitlines())}
+
+
+def _battery(cluster, status="draft", tag=None):
+    (cluster.repo / "configs").mkdir(exist_ok=True)
+    (cluster.repo / "configs" / "probes.yaml").write_text(f"status: {status}   # draft | frozen\n"
+                                                        "prereg_tag: prereg-v1\n")
+    if tag:
+        git = ["git", "-C", str(cluster.repo), "-c", "user.name=t", "-c", "user.email=t@example.org",
+               "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"]
+        for args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "freeze"], ["tag", tag]):
+            subprocess.run(git + args, check=True, capture_output=True)
+
+
+def test_ppl_phase_submits_bases_first_through_eval_slurm(cluster):
+    _train_all(cluster)
+    cluster.run("dispatch.sh", "--phase", "ppl", "--once")
+    calls = cluster.submits()
+    assert [_name(c) for c in calls] == ["medera_ppl_" + v for v in VARIANTS[:4]]
+    assert calls[0].split()[-3:] == ["hpc/eval.slurm", "ppl", "qwen_base"]
+    for c in calls:
+        assert {f"--partition={PARTS}", "--gres=gpu:1", "--time=01:00:00", f"--exclude={EXCLUDE}",
+                "--export=ALL,MEDERA_ATTEMPT=1"} <= set(c.split())
+    assert _eval_state(cluster, "ppl")["qwen_base"] == (1, "1000", "submitted")
+    assert not (cluster.logs / "dispatch_state.tsv").exists()                 # the training state is untouched
+    assert "qwen_base attempt 1 submitted" in (cluster.logs / "dispatch_ppl.log").read_text()
+
+
+def test_ppl_of_an_untrained_adapter_is_blocked_and_done_comes_from_the_results_marker(cluster):
+    _train_all(cluster, ORDER[:1])                                           # only qwen_w1 trained
+    cluster.run("dispatch.sh", "--phase", "ppl", "--once")
+    assert [_name(c) for c in cluster.submits()] == ["medera_ppl_qwen_base", "medera_ppl_gemma_base",
+                                                      "medera_ppl_qwen_w1"]
+    st = _eval_state(cluster, "ppl")
+    assert st["gemma_ex_w3"] == (0, "-", "blocked")
+    assert "gemma_al_w1 BLOCKED, not submitted: adapter runs/adapters/gemma_al_w1 is not trained" in \
+        (cluster.logs / "dispatch_ppl.log").read_text()
+    d = cluster.repo / "results" / "scores" / "perplexity" / "qwen_base"
+    d.mkdir(parents=True)
+    (d / "DONE").write_text("{}")
+    cluster.set_job("1000", "COMPLETED")
+    cluster.run("dispatch.sh", "--phase", "ppl", "--once")
+    assert _eval_state(cluster, "ppl")["qwen_base"][2] == "done"
+    _train_all(cluster, ORDER[1:2])                                          # gemma_al_w1 finishes training later
+    cluster.run("dispatch.sh", "--phase", "ppl", "--once")
+    assert _name(cluster.submits()[-1]) == "medera_ppl_gemma_al_w1"
+
+
+def test_probe_phase_is_blocked_until_frozen_and_tagged_and_the_loop_exits(cluster):
+    _train_all(cluster)
+    _battery(cluster, status="draft")
+    cluster.run("dispatch.sh", "--phase", "probe")                            # the loop, not --once: it must exit
+    log = (cluster.logs / "dispatch_probe.log").read_text()
+    assert cluster.submits() == [] and "stopping: 11 probe units are blocked" in log and "not frozen" in log
+    _battery(cluster, status="frozen")
+    cluster.run("dispatch.sh", "--phase", "probe", "--once")
+    assert cluster.submits() == [] and "prereg-v1 does not exist" in (cluster.logs / "dispatch_probe.log").read_text()
+    _battery(cluster, status="frozen", tag="prereg-v1")
+    cluster.run("dispatch.sh", "--phase", "probe", "--once")
+    calls = cluster.submits()
+    assert [_name(c) for c in calls] == ["medera_probe_" + v for v in VARIANTS[:4]]
+    assert calls[2].split()[-3:] == ["hpc/eval.slurm", "probe", "qwen_w1"]
+    assert _eval_state(cluster, "probe")["qwen_w1"] == (1, "1002", "submitted")
+
+
+def test_cap_counts_the_jobs_of_every_phase(cluster):
+    _train_all(cluster)
+    with open(cluster.db / "jobs", "a") as f:
+        f.write("900|medera_qwen_w1|sharing|RUNNING|0:0|d4041|\n901|medera_probe_qwen_base|sharing|PENDING|0:0|x|\n")
+    cluster.run("dispatch.sh", "--phase", "ppl", "--once")
+    assert len(cluster.submits()) == 2
+
+
+def test_eval_dry_run_test_only_and_status(cluster):
+    _train_all(cluster)
+    out = cluster.run("dispatch.sh", "--phase", "ppl", "--dry-run")
+    plan = [line.split()[2] for line in out.splitlines() if line.strip().startswith("WOULD SUBMIT")]
+    assert plan == VARIANTS[:4] and "hpc/eval.slurm ppl qwen_base" in out and cluster.submits() == []
+    assert not (cluster.logs / "dispatch_ppl_state.tsv").exists() and not list(cluster.logs.glob("*dry-run*"))
+    _battery(cluster, status="draft")
+    out = cluster.run("dispatch.sh", "--phase", "probe", "--test-only")
+    assert "phase probe, next unit: qwen_base" in out and "would NOT submit it yet" in out
+    assert cluster.submits()[0].split()[0] == "--test-only" and _name(cluster.submits()[0]) == "medera_probe_qwen_base"
+    cluster.run("dispatch.sh", "--phase", "ppl", "--once")
+    cluster.set_job("1000", "RUNNING", node="d4052", part="gpu-short")
+    prog = cluster.repo / "runs" / "eval" / "ppl" / "qwen_base"
+    prog.mkdir(parents=True)
+    (prog / "progress.json").write_text('{"step": 2, "total": 3, "attempt": 1, "job_id": "1000", "partition": '
+                                        '"gpu-short", "node": "d4052", "gpu": "NVIDIA H200", "updated": "x"}')
+    table = cluster.run("dispatch_status.sh", "--phase", "ppl").splitlines()[1:]
+    rows = {line.split()[0]: line.split() for line in table}
+    assert rows["ppl"] == ["ppl", "attempts", "state", "job", "partition/node/gpu", "progress"]
+    assert rows["qwen_base"] == ["qwen_base", "1", "RUNNING", "1000", "gpu-short/d4052/H200", "2/3"]
+    assert rows["gemma_ex_w3"] == ["gemma_ex_w3", "0", "new", "-", "-", "-"]
+    cluster.run("dispatch.sh", "--phase", "nope", rc=2)

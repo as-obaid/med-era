@@ -1,11 +1,20 @@
 # shellcheck shell=bash disable=SC2153  # STATE is set by the caller
 # Pure-bash helpers for hpc/dispatch.sh and dispatch_status.sh (Explorer login nodes kill CPU-busy Python).
-# Bash 3.2 compatible. Callers set STATE (the dispatcher's state file) before state_get / state_set.
+# Bash 3.2 compatible. Callers set STATE (the dispatcher's state file) before state_get / state_set, and PHASE
+# (train | ppl | probe; unset = train) before the unit_* helpers.
 
 ARMS_ORDER="qwen gemma_al gemma_ex"
 WINDOWS_ORDER="w1 w2 w3"
+# The 11 evaluation variants, bases first, then each window's arms (must match medera.variants.core_variants).
+VARIANTS_ORDER="qwen_base gemma_base qwen_w1 gemma_al_w1 gemma_ex_w1 qwen_w2 gemma_al_w2 gemma_ex_w2 qwen_w3 gemma_al_w3 gemma_ex_w3"
+# shellcheck disable=SC2034  # used by dispatch.sh and dispatch_status.sh
+PHASES="train ppl probe"
 # shellcheck disable=SC2034  # used by dispatch.sh and dispatch_stop.sh
 ADAPTER_JOB_RE='^medera_(qwen|gemma_al|gemma_ex)_w[123]$'   # Slurm job names of the 9 adapter jobs
+# Every MedEra GPU job of any phase (adapter training, medera_ppl_<variant>, medera_probe_<variant>): the
+# dispatcher's submit cap counts all of them, so a train and an eval phase never hold more than the cap together.
+# shellcheck disable=SC2034
+MEDERA_JOB_RE='^medera_((qwen|gemma_al|gemma_ex)_w[123]|(ppl|probe)_((qwen|gemma)_base|(qwen|gemma_al|gemma_ex)_w[123]))$'
 # Per-user MaxSubmit of each partition's QOS (sacctmgr show qos, 2026-11-04). A pending job counts against every
 # partition it is eligible for, so one multi-partition job uses a slot in all three.
 QOS_MAXSUBMIT=${MEDERA_QOS_MAXSUBMIT:-"sharing:4 gpu-short:8 gpu-interactive:4"}
@@ -85,3 +94,53 @@ state_set() {  # state_set <adapter> <attempts> <job_id> <status>
 
 # done_marker <arm> <window>: the adapter and its DONE marker (written by lora_cpt.py after the audit passes).
 done_marker() { [ -f "runs/adapters/$1_$2/DONE" ] && [ -f "runs/adapters/$1_$2/adapter_config.json" ]; }
+
+# ---------------------------------------------------------------------------------------------- phases and units
+# A unit is what one job works on: an adapter "<arm>:<window>" (train) or a variant name (ppl, probe).
+
+units() {
+  local v
+  if [ "${PHASE:-train}" = train ]; then adapters; else for v in $VARIANTS_ORDER; do echo "$v"; done; fi
+}
+
+unit_job_name() { if [ "${PHASE:-train}" = train ]; then echo "medera_${1%%:*}_${1##*:}"; else echo "medera_${PHASE}_$1"; fi; }
+
+unit_script() { if [ "${PHASE:-train}" = train ]; then echo "hpc/train.slurm ${1%%:*} ${1##*:}"; else echo "hpc/eval.slurm $PHASE $1"; fi; }
+
+# unit_done <unit>: the marker the job writes after its last cell/chunk (train: the adapter's DONE marker).
+unit_done() {
+  case ${PHASE:-train} in
+    train) done_marker "${1%%:*}" "${1##*:}" ;;
+    ppl) [ -f "results/scores/perplexity/$1/DONE" ] ;;
+    probe) [ -f "results/answers/$1/DONE" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+unit_progress() {  # the progress.json the job rewrites after each step, cell or chunk
+  if [ "${PHASE:-train}" = train ]; then echo "runs/checkpoints/${1%%:*}_${1##*:}/progress.json"
+  else echo "runs/eval/$PHASE/$1/progress.json"; fi
+}
+
+prereg_tag() { sed -n 's/^prereg_tag:[[:space:]]*\([^[:space:]#]*\).*/\1/p' configs/probes.yaml 2>/dev/null | head -1; }
+
+# unit_blocked <unit>: prints why the unit cannot be submitted yet and returns 0; returns 1 if it can be.
+# ppl/probe of an adapter needs the trained adapter; probe also needs a frozen battery and the pre-registration tag
+# (the job re-checks the full gate and exits 2 if it fails; this only avoids submitting jobs that would refuse).
+unit_blocked() {
+  local tag
+  [ "${PHASE:-train}" = train ] && return 1
+  case $1 in
+    *_w[123]) if ! done_marker "${1%_w[123]}" "${1##*_}"; then echo "adapter runs/adapters/$1 is not trained"; return 0; fi ;;
+  esac
+  if [ "$PHASE" = probe ]; then
+    if ! grep -q '^status:[[:space:]]*frozen' configs/probes.yaml 2>/dev/null; then
+      echo "battery configs/probes.yaml is not frozen (status: draft)"; return 0
+    fi
+    tag=$(prereg_tag)
+    if [ -z "$tag" ] || ! git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null 2>&1; then
+      echo "pre-registration tag ${tag:-<none>} does not exist (git fetch --tags?)"; return 0
+    fi
+  fi
+  return 1
+}
