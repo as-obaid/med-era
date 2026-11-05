@@ -293,3 +293,30 @@ def test_license_falls_back_to_copyright_statement(cfg, make_jats):
     assert row(_with_permissions(make_jats, IVYSPRING)) == "cc by-nc-nd"
     assert row(_with_permissions(make_jats, COPYRIGHT_NAME)) == "cc by-nc"
     assert row(_with_permissions(make_jats, COPYRIGHT_ONLY)) == ""          # a copyright line is not a license
+
+
+def test_topup_add_appends_n_new_usable_broad_rows(cfg, make_jats, tmp_path):
+    """--top-up-add N: up to N NEW usable rows on top of whatever the manifest holds (unlike --top-up-to,
+    whose N is the window's total usable rows across query_ids, judged by the Task 5 filters only)."""
+    long_xml, short_xml = make_jats(body=LONG), make_jats(body=SHORT)
+    core = FakeClient([res("PMC1"), res("PMC2")], {"PMC1": long_xml, "PMC2": long_xml})
+    harvest(core, cfg, "w1", "core", tmp_path)                                   # 2 usable core rows
+    hi = dict(title="HRT and MHT", abstract="HRT HRT")
+    mid = dict(title="Menopause and HRT", abstract="Some words here.")
+    results = [res("PMC2", **hi),                                                  # already in the manifest
+               res("PMC5", **hi), res("PMC3", **mid), res("PMC4", **mid), res("PMC7", **mid),
+               res("PMC6", title="Menopause and sleep", abstract="Hot flushes.")]  # zero density
+    xml = {"PMC5": short_xml, "PMC3": long_xml, "PMC4": long_xml, "PMC7": long_xml, "PMC6": long_xml}
+    client = FakeClient(results, xml)
+    s = harvest(client, cfg, "w1", "broad", tmp_path, top_up_add=2)
+    # Rank: PMC5 (highest, but short so not usable), then PMC3, PMC4 by PMCID; stop after 2 new usable rows.
+    assert client.fetched() == ["PMC5", "PMC3", "PMC4"]
+    rows = read_manifest(manifest_path(tmp_path))
+    assert [(r["pmcid"], r["query_id"]) for r in rows] == [
+        ("PMC1", "core"), ("PMC2", "core"), ("PMC5", "broad"), ("PMC3", "broad"), ("PMC4", "broad")]
+    assert s["usable"] == 4 and s["zero_density_skipped"] == 1
+
+
+def test_topup_add_and_topup_to_are_exclusive(cfg, tmp_path):
+    with pytest.raises(ValueError):
+        harvest(FakeClient([], {}), cfg, "w1", "broad", tmp_path, top_up_to=5, top_up_add=5)

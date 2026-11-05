@@ -51,6 +51,11 @@ filters:
   relevance_labels: manifests/relevance_labels.csv   # under --data-root; written by `collect screen-import`
   keep_labels: [relevant, borderline]                # every harvested article must have a label (hard error)
 
+topup_rule:                     # pre-registered w1 top-up rule, judged after the relevance screen (runbook Task 7)
+  window: w1
+  min_kept: 400                 # kept = relevant or borderline AND passes the Task 5 filters
+  min_est_tokens: 2000000       # sum(n_chars) / chars_per_token over the kept articles
+
 screen:                         # blinded relevance screen (docs/relevance_screen.md)
   dir: raw/screen               # under --data-root, gitignored: batches/, labels/, key.csv (salt + map)
   batch_size: 200

@@ -1,13 +1,15 @@
 """CLI: python -m medera.collect count | harvest | merge"""
 import argparse
 import csv
+import re
 from collections import Counter
 from pathlib import Path
 
 from medera.collect.europepmc import EuropePMC
 from medera.collect.harvest import harvest
 from medera.collect.manifest import DROPPED_COLUMNS, merge, read_manifest, write_manifest
-from medera.collect.screen import agreement_summary, export_window, import_labels, write_import
+from medera.collect.screen import (agreement_summary, export_incremental, export_window, import_labels,
+                                   screen_summary, write_import)
 from medera.collect.query import COUNT_COLUMNS, PART_COLUMNS, count_rows, or_guard, part_count_rows
 from medera.config import load_yaml
 from medera.preprocess.filters import is_usable
@@ -48,7 +50,7 @@ def cmd_count(cfg, root: Path, args) -> None:
 
 def cmd_harvest(cfg, root: Path, args) -> None:
     harvest(make_client(cfg), cfg, args.window, args.query, root, limit=args.limit, resume=args.resume,
-            rank_by=args.rank_by, top_up_to=args.top_up_to)
+            rank_by=args.rank_by, top_up_to=args.top_up_to, top_up_add=args.top_up_add)
 
 
 def cmd_merge(cfg, root: Path, args) -> None:
@@ -90,12 +92,32 @@ def cmd_merge(cfg, root: Path, args) -> None:
 
 
 def cmd_screen_export(cfg, root: Path, args) -> None:
-    batches = export_window(cfg, root, args.window, args.batch_size or cfg["screen"]["batch_size"], args.overwrite)
+    size = args.batch_size or cfg["screen"]["batch_size"]
+    if args.only_unlabelled:
+        batches = export_incremental(cfg, root, args.window, size)
+        if not batches:
+            print(f"[screen] {args.window}: no unlabelled, unexported manifest rows; nothing to export")
+            return
+    else:
+        batches = export_window(cfg, root, args.window, size, args.overwrite)
     for name, n in batches:
         print(f"[screen] {name}.jsonl {n} items")
-    print(f"[screen] {args.window}: {sum(n for b, n in batches if '_b' in b)} items in "
-          f"{sum('_b' in b for b, _ in batches)} batches + {sum(n for b, n in batches if '_d' in b)} double-screen; "
+    primary = [(b, n) for b, n in batches if re.search(r"_[bt]\d+$", b)]
+    print(f"[screen] {args.window}: {sum(n for _, n in primary)} items in {len(primary)} batches + "
+          f"{sum(n for b, n in batches if (b, n) not in primary)} double-screen; "
           f"key -> {root / cfg['screen']['dir'] / 'key.csv'}")
+
+
+def cmd_screen_summary(cfg, root: Path, args) -> None:
+    rule = cfg["topup_rule"]
+    for r in screen_summary(cfg, root, args.window or list(cfg["windows"])):
+        line = (f"[summary] {r['window']}: manifest={r['manifest_rows']} labelled={r['labelled']} "
+                f"unlabelled={r['unlabelled']} relevant={r['relevant']} borderline={r['borderline']} "
+                f"off_topic={r['off_topic']} kept={r['kept']} kept_est_tokens={r['kept_est_tokens']:,.0f}")
+        if r["rule_pass"] is not None:
+            line += (f" | top-up rule (kept >= {rule['min_kept']} and est tokens >= {rule['min_est_tokens']:,}): "
+                     f"{'PASS' if r['rule_pass'] else 'FAIL'}")
+        print(line)
 
 
 def cmd_screen_import(cfg, root: Path, args) -> None:
@@ -130,22 +152,32 @@ def main(argv=None) -> None:
     h.add_argument("--resume", action="store_true",
                    help="keep the manifest, skip PMCIDs already in it, and rebuild rows from XML already on disk")
     h.add_argument("--rank-by", choices=["hrt-density"], default=None)
-    h.add_argument("--top-up-to", type=int, default=None, help="stop at N usable rows (implies --resume)")
+    top = h.add_mutually_exclusive_group()
+    top.add_argument("--top-up-to", type=int, default=None,
+                     help="stop when the window manifest holds N usable rows in total, all query_ids (implies --resume)")
+    top.add_argument("--top-up-add", type=int, default=None,
+                     help="append up to N NEW usable rows, highest title+abstract HRT density first; implies "
+                          "--rank-by hrt-density and --resume; skips manifest PMCIDs and zero-density records")
     sub.add_parser("merge", parents=[common], help="dedupe window manifests -> hrt_all.csv")
     se = sub.add_parser("screen-export", parents=[common], help="blinded relevance-screen batches for one window")
     se.add_argument("--window", required=True)
     se.add_argument("--batch-size", type=int, default=None, help="items per batch (default: screen.batch_size)")
     se.add_argument("--overwrite", action="store_true", help="re-export a window that was already exported")
+    se.add_argument("--only-unlabelled", action="store_true",
+                    help="export only manifest rows with no label and no export yet, as new <w>_tNN / <w>_tdNN batches")
     si = sub.add_parser("screen-import", parents=[common], help="validate + un-blind labels -> relevance_labels.csv")
     si.add_argument("--window", action="append", default=None, help="limit to these windows (repeatable)")
     si.add_argument("--screener", default="claude-code-subagent", help="screener id when a label line has none")
+    ss = sub.add_parser("screen-summary", parents=[common], help="kept articles, est. tokens and the top-up rule")
+    ss.add_argument("--window", action="append", default=None, help="limit to these windows (repeatable)")
     args = ap.parse_args(argv)
 
     cfg = load_yaml(args.config)
     if args.cmd in ("harvest", "screen-export") and args.window not in cfg["windows"]:
         ap.error(f"--window must be one of {list(cfg['windows'])}")
     commands = {"count": cmd_count, "harvest": cmd_harvest, "merge": cmd_merge,
-                "screen-export": cmd_screen_export, "screen-import": cmd_screen_import}
+                "screen-export": cmd_screen_export, "screen-import": cmd_screen_import,
+                "screen-summary": cmd_screen_summary}
     commands[args.cmd](cfg, Path(args.data_root), args)
 
 

@@ -88,7 +88,12 @@ def _skip_no_pmcid(result, stats) -> None:
 
 
 def harvest(client, cfg, window, query_id, data_root, limit=None, resume=False, rank_by=None, top_up_to=None,
-            today=None) -> dict:
+            today=None, top_up_add=None) -> dict:
+    """Top-up modes (both imply --resume; PMCIDs already in the manifest are never re-added):
+    - top_up_to=N: stop once the window manifest holds N usable rows in total, across all query_ids.
+    - top_up_add=N: append up to N NEW usable rows, ranked by title+abstract HRT density (implies
+      rank_by="hrt-density"; zero-density candidates are never added).
+    "Usable" = passes the Task 5 filters (filters.is_usable); the relevance screen comes later."""
     data_root = Path(data_root)
     corpus = cfg["corpus"]
     xml_dir = data_root / "raw" / corpus / window
@@ -97,7 +102,11 @@ def harvest(client, cfg, window, query_id, data_root, limit=None, resume=False, 
     filters = cfg["filters"]
     today = today or date.today().isoformat()
     lo, hi = cfg["windows"][window]
-    if top_up_to is not None:
+    if top_up_to is not None and top_up_add is not None:
+        raise ValueError("use either top_up_to or top_up_add, not both")
+    if top_up_add is not None:
+        rank_by = rank_by or "hrt-density"
+    if top_up_to is not None or top_up_add is not None:
         resume = True
 
     existing = read_manifest(man_path) if resume and man_path.exists() else []
@@ -108,6 +117,8 @@ def harvest(client, cfg, window, query_id, data_root, limit=None, resume=False, 
     # Usable = passes the same filters as `preprocess text`; existing rows are judged from the XML on disk.
     usable_by_pmcid = {r["pmcid"]: is_usable((xml_dir / f"{r['pmcid']}.xml").read_bytes(), filters) for r in kept}
     usable = sum(usable_by_pmcid.values())
+    if top_up_add is not None:
+        top_up_to = usable + top_up_add
     # written = downloaded this run; reused = rebuilt from XML already on disk (resume only, never refetched)
     stats = {"written": 0, "reused": 0, "not_found": 0, "fetch_errors": 0, "parse_failures": 0, "no_pmcid": 0}
 

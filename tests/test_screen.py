@@ -89,8 +89,12 @@ def test_export_counts_shuffle_and_double_subset(harvested, repo_root):
     assert [p.read_text() for p in _batches(harvested)] == first           # same salt, seed and order
     with pytest.raises(SystemExit):                                         # refuses to clobber silently
         _cli(harvested, repo_root, "screen-export", "--window", "w1")
+    w1_bytes = {p.name: p.read_bytes() for p in _batches(harvested)}
+    key_bytes = (harvested / "raw" / "screen" / "key.csv").read_bytes()
     _cli(harvested, repo_root, "screen-export", "--window", "w2")
     assert {r["window"] for r in _key(harvested)} == {"w1", "w2"} and len({r["salt"] for r in _key(harvested)}) == 1
+    assert (harvested / "raw" / "screen" / "key.csv").read_bytes().startswith(key_bytes)   # new window: appended
+    assert all((harvested / "raw" / "screen" / "batches" / n).read_bytes() == b for n, b in w1_bytes.items())
 
 
 def _label_all(root, label="relevant", cls="", skip=None, extra=None, batches=None):
@@ -219,3 +223,89 @@ def test_screen_fields_strip_doi_urls_copyright_and_supplement_notes(make_jats):
     assert a.startswith("Estradiol lowered fracture risk in postmenopausal women.")
     for leak in ("©", "2018", "Mineral Research", "supplementary", "10.1186", "10.1007", "https://", "example.org"):
         assert leak not in a, leak
+
+
+# --- Screened top-up: incremental export, combined import, summary --------------------------------------
+
+def _add_topup_rows(root, make_jats, n=7):
+    from medera.collect.manifest import append_row
+
+    for i in range(n):
+        r = _row(f"PMC9{i:03d}", "w1", "2014-06-01")
+        r["query_id"] = "broad"
+        append_row(root / "manifests" / "hrt_w1.csv", r)
+        (root / "raw" / "hrt" / "w1" / f"{r['pmcid']}.xml").write_bytes(_xml(make_jats, r["pmcid"]))
+
+
+def _screened(root, repo_root):
+    _cli(root, repo_root, "screen-export", "--window", "w1", "--batch-size", "10")
+    _label_all(root)
+    _cli(root, repo_root, "screen-import")
+
+
+def _read_labels(root):
+    with open(root / "manifests" / "relevance_labels.csv", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def test_incremental_export_appends_and_keeps_existing_bytes(harvested, repo_root, make_jats):
+    _screened(harvested, repo_root)
+    sdir = harvested / "raw" / "screen"
+    before = {p.name: p.read_bytes() for p in _batches(harvested)}
+    key_before = (sdir / "key.csv").read_bytes()
+    _add_topup_rows(harvested, make_jats, 7)
+    _cli(harvested, repo_root, "screen-export", "--window", "w1", "--only-unlabelled", "--batch-size", "5")
+    after = {p.name: p.read_bytes() for p in _batches(harvested)}
+    assert {n: after[n] for n in before} == before                          # old batches byte-identical
+    assert sorted(set(after) - set(before)) == ["w1_t01.jsonl", "w1_t02.jsonl", "w1_td01.jsonl"]
+    key_after = (sdir / "key.csv").read_bytes()
+    assert key_after.startswith(key_before)                                # rows appended, never rewritten
+    key = _key(harvested)
+    new = [r for r in key if r["batch"].startswith("w1_t")]
+    assert {r["pmcid"] for r in new} == {f"PMC9{i:03d}" for i in range(7)}
+    assert len([r for r in new if r["batch"].startswith("w1_td")]) == 1      # round(10% of 7)
+    assert {r["salt"] for r in key} == {key[0]["salt"]}
+    assert all(r["item_id"] == item_id(key[0]["salt"], r["pmcid"]) for r in new)
+    for path in _batches(harvested):
+        if path.name.startswith("w1_t"):
+            assert all(set(rec) == {"item_id", "title", "abstract", "keywords"} for rec in _lines(path))
+    # Nothing new to export: no files, key unchanged.
+    _cli(harvested, repo_root, "screen-export", "--window", "w1", "--only-unlabelled")
+    assert {p.name for p in _batches(harvested)} == set(after) and (sdir / "key.csv").read_bytes() == key_after
+
+
+def test_reimport_with_incremental_batches_reproduces_original_labels(harvested, repo_root, make_jats, capsys):
+    _screened(harvested, repo_root)
+    original = _read_labels(harvested)
+    _add_topup_rows(harvested, make_jats, 7)
+    _cli(harvested, repo_root, "screen-export", "--window", "w1", "--only-unlabelled", "--batch-size", "5")
+    _label_all(harvested, batches={"w1_t01", "w1_t02", "w1_td01"})
+    capsys.readouterr()
+    _cli(harvested, repo_root, "screen-import", "--screener", "claude-later-model")   # a different screener id
+    out = capsys.readouterr().out
+    labels = _read_labels(harvested)
+    by_pmcid = {r["pmcid"]: r for r in labels}
+    assert [by_pmcid[r["pmcid"]] for r in original] == original              # original rows unchanged, provenance kept
+    assert len(labels) == len(original) + 7
+    assert {by_pmcid[f"PMC9{i:03d}"]["screener"] for i in range(7)} == {"claude-later-model"}
+    with open(harvested / "manifests" / "relevance_agreement.csv", newline="") as f:
+        assert len(list(csv.DictReader(f))) == 2 + 1                         # d01 pairs + td01 pair
+    assert "double-screen w1" in out and "double-screen all" in out
+
+
+def test_screen_summary_and_w1_rule(harvested, repo_root, capsys):
+    from medera.collect.screen import screen_summary
+    from medera.config import load_yaml
+
+    _screened(harvested, repo_root)
+    cfg = load_yaml(repo_root / "configs" / "corpus.yaml")
+    rows = {r["window"]: r for r in screen_summary(cfg, harvested, ["w1"])}
+    w1 = rows["w1"]
+    assert (w1["manifest_rows"], w1["labelled"], w1["unlabelled"], w1["kept"]) == (25, 25, 0, 25)
+    assert w1["kept_est_tokens"] == pytest.approx(25 * 5000 / 4)
+    assert w1["rule_pass"] is False                                          # 25 < 400 kept
+    cfg["topup_rule"].update(min_kept=20, min_est_tokens=30000)
+    assert screen_summary(cfg, harvested, ["w1"])[0]["rule_pass"] is True
+    _cli(harvested, repo_root, "screen-summary", "--window", "w1")
+    out = capsys.readouterr().out
+    assert "w1" in out and "kept=25" in out and "FAIL" in out
